@@ -46,6 +46,17 @@ def main():
     auto_open = input("Auto open file after saving? (y/n) [default: n]: ").lower() or "n"
     auto_metadata = input("Auto generate AI summary/tags? (y/n) [default: n]: ").lower() or "n"
 
+    # Get real-time chunking settings
+    print("\n--- Real-Time Chunking Settings ---")
+    chunk_duration = input("Chunk duration in seconds [default: 10]: ") or "10"
+    chunk_overlap = input("Chunk overlap in seconds [default: 1]: ") or "1"
+    worker_threads = input("Number of transcription worker threads [default: 2]: ") or "2"
+    max_retries = input("Max retry attempts for failed chunks [default: 3]: ") or "3"
+    
+    # Get VAD settings (for future auto-stop feature)
+    print("\n--- Voice Activity Detection Settings ---")
+    silence_trigger = input("Silence trigger chunks for auto-stop [default: 30]: ") or "30"
+
     # Write configuration to .env file
     with open(".env", "w") as f:
         f.write(f"SAVE_PATH='{save_path}'\n")
@@ -57,6 +68,11 @@ def main():
         f.write(f"AUTO_COPY={'true' if auto_copy == 'y' else 'false'}\n")
         f.write(f"AUTO_OPEN={'true' if auto_open == 'y' else 'false'}\n")
         f.write(f"AUTO_METADATA={'true' if auto_metadata == 'y' else 'false'}\n")
+        f.write(f"CHUNK_DURATION_SECONDS={chunk_duration}\n")
+        f.write(f"CHUNK_OVERLAP_SECONDS={chunk_overlap}\n")
+        f.write(f"TRANSCRIPTION_WORKER_THREADS={worker_threads}\n")
+        f.write(f"MAX_RETRY_ATTEMPTS={max_retries}\n")
+        f.write(f"SILENCE_TRIGGER_CHUNKS={silence_trigger}\n")
 
     print("\n🎉 Setup complete! Configuration saved to .env")
     print("The necessary aliases have been prepared.")

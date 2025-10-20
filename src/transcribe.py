@@ -14,6 +14,15 @@ from dotenv import load_dotenv
 import pyperclip
 import tempfile
 import argparse
+import threading
+import queue
+import logging
+from typing import Optional
+
+# Import our new chunking components
+from audio_chunker import AudioChunker
+from transcription_worker import TranscriptionWorkerPool
+from vad_service import VADService
 
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -27,6 +36,16 @@ AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
+
+# Real-time chunking configuration
+CHUNK_DURATION_SECONDS = float(os.getenv("CHUNK_DURATION_SECONDS", "10"))
+CHUNK_OVERLAP_SECONDS = float(os.getenv("CHUNK_OVERLAP_SECONDS", "1"))
+TRANSCRIPTION_WORKER_THREADS = int(os.getenv("TRANSCRIPTION_WORKER_THREADS", "2"))
+MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
+SILENCE_TRIGGER_CHUNKS = int(os.getenv("SILENCE_TRIGGER_CHUNKS", "30"))
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 def load_prompts():
     """Load prompts from prompts.json file"""
@@ -87,6 +106,36 @@ def call_ollama(prompt_key, text_content, prompts):
     except Exception as e:
         print(f"⚠️ Could not connect to Ollama for {prompt_key} ({e})")
         return None
+
+def deduplicate_transcript(transcript: str) -> str:
+    """
+    Remove repeated phrases that might occur due to chunk overlap.
+    
+    Args:
+        transcript: The complete transcript text
+        
+    Returns:
+        str: Deduplicated transcript
+    """
+    words = transcript.split()
+    if len(words) < 10:  # Don't process very short transcripts
+        return transcript
+    
+    # Look for repeated phrases of 2-5 words
+    for phrase_length in range(5, 1, -1):
+        i = 0
+        while i < len(words) - phrase_length * 2:
+            phrase1 = words[i:i + phrase_length]
+            phrase2 = words[i + phrase_length:i + phrase_length * 2]
+            
+            if phrase1 == phrase2:
+                # Remove the duplicate phrase
+                words = words[:i + phrase_length] + words[i + phrase_length * 2:]
+                # Don't advance i, check the same position again
+                continue
+            i += 1
+    
+    return ' '.join(words)
 
 def get_filename_from_llm(text_content):
     """Asks Ollama for a concise filename, falls back to 'voice_note' if unavailable."""
@@ -268,31 +317,131 @@ def settings_menu():
         else:
             print("❌ Invalid choice. Please select 1-9.")
 
-def record_audio():
-    """Records audio from the microphone until user presses Enter."""
+def record_audio_chunked() -> Optional[str]:
+    """
+    Records audio with real-time chunking and transcription.
+    
+    Returns:
+        str or None: Complete assembled transcript, or None if recording failed
+    """
     print("🔴 Recording... Press Enter to stop.")
+    
+    # Initialize components
+    chunker = AudioChunker(
+        chunk_duration_seconds=CHUNK_DURATION_SECONDS,
+        overlap_seconds=CHUNK_OVERLAP_SECONDS,
+        sample_rate=SAMPLE_RATE
+    )
+    
+    # Load Whisper model
+    print("🤫 Loading Whisper model...")
+    whisper_model = whisper.load_model(WHISPER_MODEL)
+    
+    # Initialize worker pool
+    worker_pool = TranscriptionWorkerPool(
+        whisper_model=whisper_model,
+        whisper_language=WHISPER_LANGUAGE,
+        num_workers=TRANSCRIPTION_WORKER_THREADS,
+        max_retry_attempts=MAX_RETRY_ATTEMPTS
+    )
+    
+    # Initialize VAD service
+    vad_service = VADService(
+        silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
+        chunk_duration_seconds=CHUNK_DURATION_SECONDS
+    )
+    
+    # Threading control
+    recording_event = threading.Event()
+    recording_event.set()
+    stop_event = threading.Event()
+    
+    # Audio data collection
     audio_data = []
     
-    def callback(indata, frames, time, status):
+    def audio_callback(indata, frames, time, status):
+        """Callback for sounddevice audio stream."""
         if status:
             print(status, file=sys.stderr)
-        audio_data.append(indata.copy())
-
-    try:
-        # The stream runs in a background thread by default
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=callback):
-            # The main thread is blocked here, waiting for the user to press Enter
-            input() 
         
-        print("\nRecording finished.")
-        if audio_data:
-            return np.concatenate(audio_data, axis=0)
-        else:
-            print("No audio recorded.")
+        if recording_event.is_set():
+            # Convert 2D array (channels x samples) to 1D array (samples)
+            audio_1d = indata.flatten()
+            audio_data.append(audio_1d.copy())
+            chunker.add_audio_data(audio_1d.copy())
+    
+    def process_ready_chunks():
+        """Process chunks as they become available."""
+        while recording_event.is_set():
+            try:
+                for chunk in chunker.get_ready_chunks():
+                    # Send to transcription workers
+                    worker_pool.add_chunk(chunk)
+                    
+                    # Send to VAD service
+                    vad_service.analyze_chunk(chunk)
+                
+                # Small delay to prevent busy waiting
+                threading.Event().wait(0.1)
+            except Exception as e:
+                logging.error(f"Error processing chunks: {e}")
+                break
+    
+    try:
+        # Start worker pool
+        worker_pool.start()
+        vad_service.start_recording()
+        
+        # Start chunk processing thread
+        chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
+        chunk_thread.start()
+        
+        # Start audio recording
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback):
+            # Wait for user to press Enter
+            input()
+        
+        print("\nRecording finished. Processing final chunk...")
+        
+        # Stop recording
+        recording_event.clear()
+        
+        # Process final partial chunk
+        final_chunk = chunker.get_final_chunk()
+        if final_chunk is not None:
+            worker_pool.add_chunk(final_chunk)
+            vad_service.analyze_chunk(final_chunk)
+        
+        # Wait for all workers to finish
+        print("⏳ Finalizing transcription...")
+        worker_pool.stop()
+        vad_service.stop_recording()
+        
+        # Get assembled transcript
+        transcript = worker_pool.get_assembled_transcript()
+        
+        if not transcript.strip():
+            print("No speech detected in the audio.")
             return None
+        
+        # Print statistics
+        stats = worker_pool.get_stats()
+        print(f"✅ Transcription complete: {stats['total_chunks_processed']} chunks processed, "
+              f"{stats['total_chunks_failed']} failed")
+        
+        return transcript
+        
     except Exception as e:
         print(f"An error occurred during recording: {e}")
+        logging.error(f"Recording error: {e}")
         return None
+    finally:
+        # Ensure cleanup
+        recording_event.clear()
+        if 'worker_pool' in locals():
+            worker_pool.stop()
+        if 'vad_service' in locals():
+            vad_service.stop_recording()
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle clipboard, file opening, and AI metadata generation based on settings"""
@@ -401,81 +550,59 @@ def main(args=None):
     if args is None:
         args = type('Args', (), {})()
     
-    # 1. Record Audio and save to a temporary file
-    audio_data = record_audio()
-    if audio_data is None or audio_data.size == 0:
+    # 1. Record Audio with real-time chunking and transcription
+    transcribed_text = record_audio_chunked()
+    if not transcribed_text:
         return
 
-    temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    write(temp_audio_file.name, SAMPLE_RATE, audio_data)
-    print(f"Audio temporarily saved to: {temp_audio_file.name}")
+    # 2. Deduplicate transcript to remove any repetition from chunk overlap
+    transcribed_text = deduplicate_transcript(transcribed_text)
 
-    try:
-        # 2. Transcribe Audio using Whisper
-        print("🤫 Transcribing audio with Whisper... (this may take a moment)")
-        model = whisper.load_model(WHISPER_MODEL)
-        
-        # Set language parameter for transcription
-        if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
-            result = model.transcribe(temp_audio_file.name, fp16=False, language=WHISPER_LANGUAGE)
-        else:
-            result = model.transcribe(temp_audio_file.name, fp16=False)
-        transcribed_text = result["text"].strip()
-        
-        if not transcribed_text:
-            print("No speech detected in the audio.")
-            return
+    print("\n--- TRANSCRIPT ---")
+    print(transcribed_text)
+    print("--------------------")
 
-        print("\n--- TRANSCRIPT ---")
-        print(transcribed_text)
-        print("--------------------")
+    # 2. Quick filename generation and save immediately
+    ollama_available = check_ollama_available()
+    if ollama_available:
+        print("🧠 Generating filename...")
+    else:
+        print("📝 Creating filename (Ollama not available)...")
+    
+    base_name = get_filename_from_llm(transcribed_text)
+    timestamp = datetime.now().strftime("%d%m%y_%H%M")
+    final_filename = f"{base_name}_{timestamp}.{OUTPUT_FORMAT}"
+    full_path = os.path.join(SAVE_PATH, final_filename)
 
-        # 3. Quick filename generation and save immediately
-        ollama_available = check_ollama_available()
-        if ollama_available:
-            print("🧠 Generating filename...")
-        else:
-            print("📝 Creating filename (Ollama not available)...")
-        
-        base_name = get_filename_from_llm(transcribed_text)
-        timestamp = datetime.now().strftime("%d%m%y_%H%M")
-        final_filename = f"{base_name}_{timestamp}.{OUTPUT_FORMAT}"
-        full_path = os.path.join(SAVE_PATH, final_filename)
+    # 3. Create initial file with basic template (no summary/tags yet)
+    templates = load_templates()
+    now = datetime.now()
+    created_date = now.strftime("%Y-%m-%d")
+    created_time = now.strftime("%H:%M")
+    
+    # Create basic content without summary/tags
+    template_key = f"{OUTPUT_FORMAT}_template"
+    
+    if template_key in templates:
+        content = templates[template_key].format(
+            created_date=created_date,
+            created_time=created_time,
+            summary="[Summary will be generated if requested]",
+            transcription=transcribed_text,
+            tags_section="\n  - voice-note",
+            tags_inline="voice-note"
+        )
+    else:
+        # Fallback to simple format
+        content = f"# Transcription: {now.strftime('%d %B %Y, %H:%M')}\n\n{transcribed_text}"
+    
+    # 4. Save the transcript immediately
+    with open(full_path, "w") as f:
+        f.write(content)
+    print(f"✅ Successfully saved transcript to: {full_path}")
 
-        # 4. Create initial file with basic template (no summary/tags yet)
-        templates = load_templates()
-        now = datetime.now()
-        created_date = now.strftime("%Y-%m-%d")
-        created_time = now.strftime("%H:%M")
-        
-        # Create basic content without summary/tags
-        template_key = f"{OUTPUT_FORMAT}_template"
-        
-        if template_key in templates:
-            content = templates[template_key].format(
-                created_date=created_date,
-                created_time=created_time,
-                summary="[Summary will be generated if requested]",
-                transcription=transcribed_text,
-                tags_section="\n  - voice-note",
-                tags_inline="voice-note"
-            )
-        else:
-            # Fallback to simple format
-            content = f"# Transcription: {now.strftime('%d %B %Y, %H:%M')}\n\n{transcribed_text}"
-        
-        # 5. Save the transcript immediately
-        with open(full_path, "w") as f:
-            f.write(content)
-        print(f"✅ Successfully saved transcript to: {full_path}")
-
-        # 6. Handle post-transcription actions
-        handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args)
-
-    finally:
-        # 7. Clean up the temporary audio file
-        os.remove(temp_audio_file.name)
-        print("Temporary audio file cleaned up.")
+    # 5. Handle post-transcription actions
+    handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args)
 
 if __name__ == "__main__":
     # Parse command line arguments
