@@ -21,8 +21,10 @@ if ! command -v ollama &> /dev/null; then
     echo "⚠️  Ollama is not installed. AI features (smart filenames, summaries, tags) will be disabled."
     echo "   You can install it later from https://ollama.ai to enable these features."
     echo "   The transcriber will still work perfectly for basic transcription!"
+    echo "   💡 Basic installation mode will be recommended during setup."
 else
     echo "✅ Ollama detected - AI features will be available."
+    echo "   💡 You can choose detailed installation mode to configure AI settings."
 fi
 
 # 2. Check for PortAudio (dependency for sounddevice)

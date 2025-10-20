@@ -1,10 +1,35 @@
 # configure.py
 
 import os
+import shutil
 
 def main():
     print("--- 🎙️ Welcome to the Local Transcriber Setup ---")
     print("Let's configure your settings. Press Enter to accept defaults.\n")
+    
+    # Check if Ollama is installed
+    ollama_installed = shutil.which('ollama') is not None
+    
+    # Choose installation mode
+    print("Choose installation type:")
+    print("1) Basic (recommended) - Quick setup with sensible defaults")
+    print("2) Detailed - Configure all advanced settings")
+    install_mode = ""
+    while install_mode not in ["1", "2"]:
+        install_mode = input("Enter your choice (1 or 2) [default: 1]: ").strip() or "1"
+    
+    is_basic_mode = install_mode == "1"
+    
+    if is_basic_mode:
+        print("✅ Basic mode selected - using sensible defaults for advanced settings")
+    else:
+        print("✅ Detailed mode selected - you'll configure all settings")
+    
+    if not ollama_installed:
+        print("⚠️  Ollama not detected - AI features (smart filenames, summaries) will be disabled")
+        print("   You can install Ollama later from https://ollama.ai to enable these features")
+    
+    print()
 
     # 1. Get the recording command (alias)
     rec_command = input("Enter the command you'll use to start recording [default: rec]: ") or "rec"
@@ -24,15 +49,18 @@ def main():
     models = ["tiny", "base", "small", "medium", "large"]
     model_choice = ""
     while model_choice not in models:
-        model_choice = input(f"Choose a Whisper model {models} [default: small]: ") or "base"
+        model_choice = input(f"Choose a Whisper model {models} [default: small]: ") or "small"
     print("\nDownloading the Whisper model now. This might take a moment...")
     # This part triggers the download during setup
     import whisper
     whisper.load_model(model_choice)
     print("✅ Model downloaded successfully.")
 
-    # 5. Get Ollama model for naming
-    ollama_model = input("Enter the Ollama model to use for file naming (e.g., gemma3:270m) [default: gemma3:270m]: ") or "gemma3:270m"
+    # 5. Get Ollama model for naming (only if Ollama is installed)
+    if ollama_installed:
+        ollama_model = input("Enter the Ollama model to use for file naming (e.g., gemma3:4b) [default: gemma3:4b]: ") or "gemma3:4b"
+    else:
+        ollama_model = "gemma3:4b"  # Default value when Ollama not installed
 
     # 6. Get language preference for Whisper
     print("\n--- Language Settings ---")
@@ -44,18 +72,34 @@ def main():
     print("\n--- Auto Actions ---")
     auto_copy = input("Auto copy to clipboard? (y/n) [default: n]: ").lower() or "n"
     auto_open = input("Auto open file after saving? (y/n) [default: n]: ").lower() or "n"
-    auto_metadata = input("Auto generate AI summary/tags? (y/n) [default: n]: ").lower() or "n"
+    
+    if ollama_installed:
+        auto_metadata = input("Auto generate AI summary/tags? (y/n) [default: n]: ").lower() or "n"
+    else:
+        auto_metadata = "n"  # Default to no when Ollama not installed
 
     # Get real-time chunking settings
-    print("\n--- Real-Time Chunking Settings ---")
-    chunk_duration = input("Chunk duration in seconds [default: 10]: ") or "10"
-    chunk_overlap = input("Chunk overlap in seconds [default: 1]: ") or "1"
-    worker_threads = input("Number of transcription worker threads [default: 2]: ") or "2"
-    max_retries = input("Max retry attempts for failed chunks [default: 3]: ") or "3"
-    
-    # Get VAD settings (for future auto-stop feature)
-    print("\n--- Voice Activity Detection Settings ---")
-    silence_trigger = input("Silence trigger chunks for auto-stop [default: 30]: ") or "30"
+    if is_basic_mode:
+        print("\n--- Performance Settings ---")
+        print("Using sensible defaults for performance settings:")
+        print("  • Chunk duration: 10 seconds (how often you see updates)")
+        print("  • No speech detection: 2 minutes (auto-stop duration)")
+        print("  • Advanced settings: Optimized automatically")
+        chunk_duration = "10"
+        silence_duration = "120"
+    else:
+        print("\n--- Performance Settings ---")
+        print("Chunk Duration: How often you see transcription updates")
+        print("  • Shorter (5-8s): More frequent updates")
+        print("  • Default (10s): Smooth, balanced experience")  
+        print("  • Longer (15-30s): Less frequent updates")
+        chunk_duration = input("Chunk duration in seconds (5-30) [default: 10]: ") or "10"
+        
+        print("\nNo Speech Detection: Automatically stop recording when no speech detected")
+        print("  • Default (120s): 2 minutes of no speech")
+        print("  • Shorter (60s): 1 minute - stops sooner")
+        print("  • Longer (180s): 3 minutes - waits longer")
+        silence_duration = input("No speech duration in seconds (30-300) [default: 120]: ") or "120"
     
     # Get microphone device selection
     print("\n--- Microphone Device Selection ---")
@@ -94,17 +138,29 @@ def main():
         f.write(f"OUTPUT_FORMAT='{output_format}'\n")
         f.write(f"WHISPER_MODEL='{model_choice}'\n")
         f.write(f"WHISPER_LANGUAGE='{language_choice}'\n")
-        f.write(f"OLLAMA_MODEL='{ollama_model}'\n")
+        
+        # Write Ollama settings with appropriate comments
+        if ollama_installed:
+            f.write(f"OLLAMA_MODEL='{ollama_model}'\n")
+            f.write(f"AUTO_METADATA={'true' if auto_metadata == 'y' else 'false'}\n")
+        else:
+            f.write(f"# Requires Ollama - install from https://ollama.ai\n")
+            f.write(f"OLLAMA_MODEL='{ollama_model}'\n")
+            f.write(f"# Requires Ollama - install from https://ollama.ai\n")
+            f.write(f"AUTO_METADATA=false\n")
+        
         f.write(f"COMMAND_NAME='{rec_command}'\n")
         f.write(f"AUTO_COPY={'true' if auto_copy == 'y' else 'false'}\n")
         f.write(f"AUTO_OPEN={'true' if auto_open == 'y' else 'false'}\n")
-        f.write(f"AUTO_METADATA={'true' if auto_metadata == 'y' else 'false'}\n")
         f.write(f"CHUNK_DURATION_SECONDS={chunk_duration}\n")
-        f.write(f"CHUNK_OVERLAP_SECONDS={chunk_overlap}\n")
-        f.write(f"TRANSCRIPTION_WORKER_THREADS={worker_threads}\n")
-        f.write(f"MAX_RETRY_ATTEMPTS={max_retries}\n")
-        f.write(f"SILENCE_TRIGGER_CHUNKS={silence_trigger}\n")
+        f.write(f"SILENCE_DURATION_SECONDS={silence_duration}\n")
         f.write(f"DEFAULT_MIC_DEVICE={mic_device}\n")
+        
+        # Hardcoded advanced settings (optimized defaults)
+        f.write(f"# Advanced settings - optimized for best performance\n")
+        f.write(f"CHUNK_OVERLAP_SECONDS=2.5\n")
+        f.write(f"TRANSCRIPTION_WORKER_THREADS=2\n")
+        f.write(f"MAX_RETRY_ATTEMPTS=4\n")
 
     print("\n🎉 Setup complete! Configuration saved to .env")
     print("The necessary aliases have been prepared.")

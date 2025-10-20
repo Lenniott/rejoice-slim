@@ -1,6 +1,6 @@
 {
   "combined_metadata": {
-    "prompt": "Extract key info from this transcription. Return ONLY JSON:\n{{\n  \"filename\": \"brief_topic_name\",\n  \"summary\": \"one sentence\",\n  \"tags\": [\"tag1\", \"tag2\"]\n}}\n\nTranscription: {text}",
+    "prompt": "Extract key info from this transcription. Return ONLY JSON:\n{{\n  \"filename\": \"brief_topic_name\",\n  \"summary\": \"two sentence summary\",\n  \"tags\": [\"tag1\", \"tag2\"]\n}}\n\nTranscription: {text}",
     "description": "Generates all metadata in one call"
   }
 }

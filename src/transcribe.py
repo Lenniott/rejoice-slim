@@ -1,5 +1,9 @@
 # src/transcribe.py
 
+# Suppress urllib3 SSL warnings before any imports
+import warnings
+warnings.filterwarnings('ignore', message='urllib3 v2 only supports OpenSSL 1.1.1+')
+
 import os
 import sys
 import subprocess
@@ -40,10 +44,15 @@ SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
 
 # Real-time chunking configuration
 CHUNK_DURATION_SECONDS = float(os.getenv("CHUNK_DURATION_SECONDS", "10"))
-CHUNK_OVERLAP_SECONDS = float(os.getenv("CHUNK_OVERLAP_SECONDS", "1"))
+SILENCE_DURATION_SECONDS = int(os.getenv("SILENCE_DURATION_SECONDS", "120"))
+
+# Hardcoded advanced settings (optimized defaults)
+CHUNK_OVERLAP_SECONDS = float(os.getenv("CHUNK_OVERLAP_SECONDS", "2.5"))
 TRANSCRIPTION_WORKER_THREADS = int(os.getenv("TRANSCRIPTION_WORKER_THREADS", "2"))
-MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
-SILENCE_TRIGGER_CHUNKS = int(os.getenv("SILENCE_TRIGGER_CHUNKS", "30"))
+MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "4"))
+
+# Calculate silence trigger chunks from duration
+SILENCE_TRIGGER_CHUNKS = int(SILENCE_DURATION_SECONDS / CHUNK_DURATION_SECONDS)
 
 # Audio device configuration
 DEFAULT_MIC_DEVICE = int(os.getenv("DEFAULT_MIC_DEVICE", "-1"))
@@ -262,24 +271,49 @@ def update_env_setting(key, value):
         f.writelines(lines)
 
 def settings_menu():
-    """Interactive settings menu"""
-    print("⚙️ Settings Menu")
-    print("================")
+    """Interactive settings menu with categories"""
+    print("\n⚙️  Settings Menu")
+    print("─" * 50)
     
     while True:
-        print(f"\nCurrent Settings:")
-        print(f"1. Whisper Model: {WHISPER_MODEL}")
-        print(f"2. Whisper Language: {WHISPER_LANGUAGE}")
-        print(f"3. Ollama Model: {OLLAMA_MODEL}")
-        print(f"4. Output Format: {OUTPUT_FORMAT}")
-        print(f"5. Save Path: {SAVE_PATH}")
-        print(f"6. Auto Copy: {'Yes' if AUTO_COPY else 'No'}")
-        print(f"7. Auto Open: {'Yes' if AUTO_OPEN else 'No'}")
-        print(f"8. Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
-        print(f"9. Microphone Device: {DEFAULT_MIC_DEVICE if DEFAULT_MIC_DEVICE != -1 else 'System Default'}")
-        print(f"10. Exit Settings")
+        print("\n📋 Settings Categories:")
+        print("  1. 📝 Transcription (Whisper model, language)")
+        print("  2. 📁 Output (Format, save path, auto-actions)")
+        print("  3. 🤖 AI (Ollama model, auto-metadata)")
+        print("  4. 🎤 Audio (Microphone device)")
+        print("  5. ⚡ Performance (Chunking, auto-stop)")
+        print("  6. 🚪 Exit")
         
-        choice = input("\nWhat would you like to change? (1-10): ").strip()
+        choice = input("\n👉 Choose a category (1-6): ").strip()
+        
+        if choice == "1":
+            transcription_settings()
+        elif choice == "2":
+            output_settings()
+        elif choice == "3":
+            ai_settings()
+        elif choice == "4":
+            audio_settings()
+        elif choice == "5":
+            advanced_performance_settings()
+        elif choice == "6":
+            print("👋 Exiting settings...")
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-6.")
+
+def transcription_settings():
+    """Transcription settings submenu"""
+    while True:
+        print(f"\n📝 Transcription Settings")
+        print("─" * 30)
+        print(f"Current Whisper Model: {WHISPER_MODEL}")
+        print(f"Current Language: {WHISPER_LANGUAGE}")
+        print(f"\n1. Change Whisper Model")
+        print(f"2. Change Language")
+        print(f"3. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-3): ").strip()
         
         if choice == "1":
             print("\nAvailable Whisper Models:")
@@ -295,9 +329,17 @@ def settings_menu():
                 new_model = model_choice
             
             if new_model:
-                update_env_setting("WHISPER_MODEL", new_model)
-                print(f"✅ Whisper model changed to: {new_model}")
-                print("⚠️ Restart the script to use the new model")
+                print(f"\n📥 Downloading Whisper model '{new_model}'...")
+                print("This may take a moment depending on the model size...")
+                try:
+                    import whisper
+                    whisper.load_model(new_model)
+                    update_env_setting("WHISPER_MODEL", new_model)
+                    print(f"✅ Whisper model changed to: {new_model}")
+                    print("✅ Model downloaded and ready to use")
+                except Exception as e:
+                    print(f"❌ Failed to download model: {e}")
+                    print("⚠️ Model setting not updated")
         
         elif choice == "2":
             print("\nCommon languages:")
@@ -316,8 +358,87 @@ def settings_menu():
                 print("⚠️ Restart the script to use the new language")
         
         elif choice == "3":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-3.")
+
+def output_settings():
+    """Output settings submenu"""
+    while True:
+        print(f"\n📁 Output Settings")
+        print("─" * 20)
+        print(f"Current Format: {OUTPUT_FORMAT}")
+        print(f"Current Save Path: {SAVE_PATH}")
+        print(f"Auto Copy: {'Yes' if AUTO_COPY else 'No'}")
+        print(f"Auto Open: {'Yes' if AUTO_OPEN else 'No'}")
+        print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"\n1. Change Output Format")
+        print(f"2. Change Save Path")
+        print(f"3. Toggle Auto Copy")
+        print(f"4. Toggle Auto Open")
+        print(f"5. Toggle Auto Metadata")
+        print(f"6. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-6): ").strip()
+        
+        if choice == "1":
+            format_choice = input("Choose output format (md/txt): ").strip().lower()
+            if format_choice in ["md", "txt"]:
+                update_env_setting("OUTPUT_FORMAT", format_choice)
+                print(f"✅ Output format changed to: {format_choice}")
+                print("⚠️ Restart the script to use the new format")
+        
+        elif choice == "2":
+            new_path = input(f"Enter new save path [{SAVE_PATH}]: ").strip()
+            if new_path:
+                os.makedirs(new_path, exist_ok=True)
+                update_env_setting("SAVE_PATH", new_path)
+                print(f"✅ Save path changed to: {new_path}")
+                print("⚠️ Restart the script to use the new path")
+        
+        elif choice == "3":
+            new_setting = input("Auto copy to clipboard? (y/n): ").lower()
+            if new_setting in ['y', 'n']:
+                update_env_setting("AUTO_COPY", 'true' if new_setting == 'y' else 'false')
+                print(f"✅ Auto copy changed to: {'Yes' if new_setting == 'y' else 'No'}")
+                print("⚠️ Restart the script to use the new setting")
+        
+        elif choice == "4":
+            new_setting = input("Auto open file? (y/n): ").lower()
+            if new_setting in ['y', 'n']:
+                update_env_setting("AUTO_OPEN", 'true' if new_setting == 'y' else 'false')
+                print(f"✅ Auto open changed to: {'Yes' if new_setting == 'y' else 'No'}")
+                print("⚠️ Restart the script to use the new setting")
+        
+        elif choice == "5":
+            new_setting = input("Auto generate AI metadata? (y/n): ").lower()
+            if new_setting in ['y', 'n']:
+                update_env_setting("AUTO_METADATA", 'true' if new_setting == 'y' else 'false')
+                print(f"✅ Auto metadata changed to: {'Yes' if new_setting == 'y' else 'No'}")
+                print("⚠️ Restart the script to use the new setting")
+        
+        elif choice == "6":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-6.")
+
+def ai_settings():
+    """AI settings submenu"""
+    while True:
+        print(f"\n🤖 AI Settings")
+        print("─" * 15)
+        print(f"Current Ollama Model: {OLLAMA_MODEL}")
+        print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"\n1. Change Ollama Model")
+        print(f"2. Toggle Auto Metadata")
+        print(f"3. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-3): ").strip()
+        
+        if choice == "1":
             print("\nSuggested Ollama Models:")
-            print("  • llama3 (recommended)")
+            print("  • gemma3:4b (recommended)")
+            print("  • llama3 (good alternative)")
             print("  • qwen3:0.6b (fast)")
             print("  • phi3")
             print("  • gemma")
@@ -328,44 +449,30 @@ def settings_menu():
                 print(f"✅ Ollama model changed to: {new_model}")
                 print("⚠️ Restart the script to use the new model")
         
-        elif choice == "4":
-            format_choice = input("Choose output format (md/txt): ").strip().lower()
-            if format_choice in ["md", "txt"]:
-                update_env_setting("OUTPUT_FORMAT", format_choice)
-                print(f"✅ Output format changed to: {format_choice}")
-                print("⚠️ Restart the script to use the new format")
-        
-        elif choice == "5":
-            new_path = input(f"Enter new save path [{SAVE_PATH}]: ").strip()
-            if new_path:
-                # Create directory if it doesn't exist
-                os.makedirs(new_path, exist_ok=True)
-                update_env_setting("SAVE_PATH", new_path)
-                print(f"✅ Save path changed to: {new_path}")
-                print("⚠️ Restart the script to use the new path")
-        
-        elif choice == "6":
-            new_setting = input("Auto copy to clipboard? (y/n): ").lower()
-            if new_setting in ['y', 'n']:
-                update_env_setting("AUTO_COPY", 'true' if new_setting == 'y' else 'false')
-                print(f"✅ Auto copy changed to: {'Yes' if new_setting == 'y' else 'No'}")
-                print("⚠️ Restart the script to use the new setting")
-        
-        elif choice == "7":
-            new_setting = input("Auto open file? (y/n): ").lower()
-            if new_setting in ['y', 'n']:
-                update_env_setting("AUTO_OPEN", 'true' if new_setting == 'y' else 'false')
-                print(f"✅ Auto open changed to: {'Yes' if new_setting == 'y' else 'No'}")
-                print("⚠️ Restart the script to use the new setting")
-        
-        elif choice == "8":
+        elif choice == "2":
             new_setting = input("Auto generate AI metadata? (y/n): ").lower()
             if new_setting in ['y', 'n']:
                 update_env_setting("AUTO_METADATA", 'true' if new_setting == 'y' else 'false')
                 print(f"✅ Auto metadata changed to: {'Yes' if new_setting == 'y' else 'No'}")
                 print("⚠️ Restart the script to use the new setting")
         
-        elif choice == "9":
+        elif choice == "3":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-3.")
+
+def audio_settings():
+    """Audio settings submenu"""
+    while True:
+        print(f"\n🎤 Audio Settings")
+        print("─" * 18)
+        print(f"Current Microphone Device: {DEFAULT_MIC_DEVICE if DEFAULT_MIC_DEVICE != -1 else 'System Default'}")
+        print(f"\n1. Change Microphone Device")
+        print(f"2. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-2): ").strip()
+        
+        if choice == "1":
             print("\n--- Microphone Device Selection ---")
             devices = list_audio_devices()
             if devices:
@@ -384,12 +491,63 @@ def settings_menu():
             else:
                 print("❌ No audio input devices found")
         
-        elif choice == "10":
-            print("👋 Exiting settings...")
+        elif choice == "2":
             break
-        
         else:
-            print("❌ Invalid choice. Please select 1-10.")
+            print("❌ Invalid choice. Please select 1-2.")
+
+def advanced_performance_settings():
+    """Advanced performance settings submenu"""
+    while True:
+        print(f"\n⚡ Performance Settings")
+        print("─" * 25)
+        print(f"Chunk Duration: {os.getenv('CHUNK_DURATION_SECONDS', '10')} seconds")
+        print(f"No Speech Detection: {os.getenv('SILENCE_DURATION_SECONDS', '120')} seconds")
+        print(f"\n1. Change Chunk Duration")
+        print(f"2. Change No Speech Detection Duration")
+        print(f"3. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-3): ").strip()
+        
+        if choice == "1":
+            current_duration = int(os.getenv('CHUNK_DURATION_SECONDS', '10'))
+            new_duration = input(f"Enter chunk duration in seconds (5-30) [current: {current_duration}]: ").strip()
+            try:
+                duration = int(new_duration) if new_duration else current_duration
+                if 5 <= duration <= 30:
+                    if duration < 8:
+                        print("ℹ️ Shorter duration = more frequent updates")
+                    elif duration > 15:
+                        print("ℹ️ Longer duration = less frequent updates")
+                    update_env_setting("CHUNK_DURATION_SECONDS", str(duration))
+                    print(f"✅ Chunk duration changed to: {duration} seconds")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Duration must be between 5 and 30 seconds")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "2":
+            current_silence = int(os.getenv('SILENCE_DURATION_SECONDS', '120'))
+            new_silence = input(f"Enter no speech detection duration in seconds (30-300) [current: {current_silence}]: ").strip()
+            try:
+                silence = int(new_silence) if new_silence else current_silence
+                if 30 <= silence <= 300:
+                    minutes = silence // 60
+                    seconds = silence % 60
+                    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+                    update_env_setting("SILENCE_DURATION_SECONDS", str(silence))
+                    print(f"✅ No speech detection changed to: {silence} seconds ({time_str})")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Duration must be between 30 and 300 seconds")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "3":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-3.")
 
 def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
     """
