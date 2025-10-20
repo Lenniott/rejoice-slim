@@ -17,7 +17,8 @@ import argparse
 import threading
 import queue
 import logging
-from typing import Optional
+import uuid
+from typing import Optional, Dict, Any
 
 # Import our new chunking components
 from audio_chunker import AudioChunker
@@ -46,6 +47,11 @@ SILENCE_TRIGGER_CHUNKS = int(os.getenv("SILENCE_TRIGGER_CHUNKS", "30"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Suppress verbose logging from our libraries
+logging.getLogger('audio_chunker').setLevel(logging.WARNING)
+logging.getLogger('transcription_worker').setLevel(logging.WARNING)
+logging.getLogger('vad_service').setLevel(logging.WARNING)
 
 def load_prompts():
     """Load prompts from prompts.json file"""
@@ -82,23 +88,33 @@ def call_ollama(prompt_key, text_content, prompts):
         return None
     
     prompt_template = prompts[prompt_key]["prompt"]
-    prompt = prompt_template.format(text=text_content[:1000])
+    # Send full transcript, not truncated
+    prompt = prompt_template.format(text=text_content)
     
     try:
         payload = {
             "model": OLLAMA_MODEL,
             "prompt": prompt,
-            "stream": False
+            "stream": False,
+            "options": {
+                "temperature": 0.3,  # Lower temperature for faster, more focused responses
+                "top_p": 0.9,
+                "max_tokens": 200  # Limit response length for speed
+            }
         }
-        response = requests.post(OLLAMA_API_URL, json=payload)
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=10)
         response.raise_for_status()
         
         # Get response and clean it up
         raw_response = json.loads(response.text)["response"].strip()
         
-        # Remove thinking tags and extra content
+        # Remove thinking tags and extra content (more comprehensive)
         import re
+        # Remove various thinking patterns
         cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
+        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'\[thinking\].*?\[/thinking\]', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'^.*?(\{.*\}).*$', r'\1', cleaned, flags=re.DOTALL)  # Extract JSON if it exists
         cleaned = cleaned.strip()
         
         return cleaned if cleaned else None
@@ -181,6 +197,72 @@ def get_tags_from_llm(text_content):
         return tags[:5]  # Limit to 5 tags max
     
     return []
+
+def get_combined_metadata_from_llm(text_content):
+    """Gets filename, summary, and tags in one LLM call."""
+    if not check_ollama_available():
+        return None
+    
+    prompts = load_prompts()
+    result = call_ollama("combined_metadata", text_content, prompts)
+    
+    if result:
+        try:
+            # Try to extract JSON from the response
+            import re
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = result.strip()
+            
+            # Parse JSON response - handle extra data after JSON
+            try:
+                metadata = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                if "Extra data" in str(e):
+                    # Try to parse just the first valid JSON object
+                    lines = json_str.split('\n')
+                    json_lines = []
+                    for line in lines:
+                        json_lines.append(line)
+                        try:
+                            test_json = json.loads('\n'.join(json_lines))
+                            metadata = test_json
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                    else:
+                        raise e
+                else:
+                    raise e
+            
+            # Validate required fields
+            if all(key in metadata for key in ['filename', 'summary', 'tags']):
+                # Clean up filename
+                filename = metadata['filename'].strip()
+                if not filename:
+                    return None
+                
+                # Clean up tags
+                tags = metadata['tags']
+                if isinstance(tags, list):
+                    tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                    tags = tags[:5]  # Limit to 5 tags max
+                else:
+                    tags = []
+                
+                return {
+                    'filename': filename,
+                    'summary': metadata['summary'].strip(),
+                    'tags': tags
+                }
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"⚠️ Error parsing LLM metadata response: {e}")
+            print(f"Raw response: {result[:200]}...")
+            return None
+    
+    return None
 
 def update_env_setting(key, value):
     """Update a setting in the .env file"""
@@ -374,12 +456,16 @@ def record_audio_chunked() -> Optional[str]:
         """Process chunks as they become available."""
         while recording_event.is_set():
             try:
+                chunks_processed = 0
                 for chunk in chunker.get_ready_chunks():
                     # Send to transcription workers
                     worker_pool.add_chunk(chunk)
+                    chunks_processed += 1
                     
                     # Send to VAD service
                     vad_service.analyze_chunk(chunk)
+                
+                # Chunk processing happens silently in background
                 
                 # Small delay to prevent busy waiting
                 threading.Event().wait(0.1)
@@ -397,9 +483,15 @@ def record_audio_chunked() -> Optional[str]:
         chunk_thread.start()
         
         # Start audio recording
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback):
-            # Wait for user to press Enter
-            input()
+        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback)
+        stream.start()
+        
+        # Wait for user to press Enter
+        input()
+        
+        # Stop recording
+        stream.stop()
+        stream.close()
         
         print("\nRecording finished. Processing final chunk...")
         
@@ -420,14 +512,20 @@ def record_audio_chunked() -> Optional[str]:
         # Get assembled transcript
         transcript = worker_pool.get_assembled_transcript()
         
+        # If no chunks were processed, fall back to transcribing the full audio
+        if not transcript.strip() and audio_data:
+            full_audio = np.concatenate(audio_data, axis=0)
+            if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+                result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
+            else:
+                result = whisper_model.transcribe(full_audio, fp16=False)
+            transcript = result["text"].strip()
+        
         if not transcript.strip():
             print("No speech detected in the audio.")
             return None
         
-        # Print statistics
-        stats = worker_pool.get_stats()
-        print(f"✅ Transcription complete: {stats['total_chunks_processed']} chunks processed, "
-              f"{stats['total_chunks_failed']} failed")
+        # Transcription complete - no need to show chunk statistics
         
         return transcript
         
@@ -444,106 +542,26 @@ def record_audio_chunked() -> Optional[str]:
             vad_service.stop_recording()
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
-    """Handle clipboard, file opening, and AI metadata generation based on settings"""
+    """Handle file opening based on settings"""
     
     # Determine actions based on args or auto settings
-    should_copy = args.copy if hasattr(args, 'copy') and args.copy is not None else AUTO_COPY
     should_open = args.open if hasattr(args, 'open') and args.open is not None else AUTO_OPEN
-    should_metadata = args.metadata if hasattr(args, 'metadata') and args.metadata is not None else AUTO_METADATA
     
-    # Copy to clipboard
-    if should_copy:
-        pyperclip.copy(transcribed_text)
-        print("📋 Transcription copied to clipboard.")
-    elif not hasattr(args, 'copy') or args.copy is None:
-        # Only ask if not specified via command line AND auto-copy is disabled
-        if not AUTO_COPY and input("\n📋 Copy transcription to clipboard? (y/n): ").lower() == 'y':
-            pyperclip.copy(transcribed_text)
-            print("Transcription copied to clipboard.")
-    
-    # Open file
+    # Open file - only if explicitly enabled
     if should_open:
         opener = "open" if sys.platform == "darwin" else "xdg-open"
         subprocess.run([opener, full_path])
         print("📂 File opened.")
     elif not hasattr(args, 'open') or args.open is None:
-        # Only ask if not specified via command line AND auto-open is disabled
-        if not AUTO_OPEN and input("📂 Open the file? (y/n): ").lower() == 'y':
-            opener = "open" if sys.platform == "darwin" else "xdg-open"
-            subprocess.run([opener, full_path])
-    
-    # Generate AI metadata
-    if ollama_available and should_metadata:
-        print("🧠 Generating AI summary and tags...")
-        summary = get_summary_from_llm(transcribed_text)
-        tags = get_tags_from_llm(transcribed_text)
-        
-        # Update the file with summary and tags
-        try:
-            with open(full_path, "r") as f:
-                current_content = f.read()
-            
-            # Replace the placeholder summary
-            updated_content = current_content.replace(
-                "[Summary will be generated if requested]", 
-                summary
-            )
-            
-            # Add tags if we have them
-            if tags:
-                tags_to_add = "\n".join([f"  - {tag}" for tag in tags])
-                updated_content = updated_content.replace(
-                    "tags:\n  - voice-note",
-                    f"tags:\n  - voice-note\n{tags_to_add}"
-                )
-            
-            with open(full_path, "w") as f:
-                f.write(updated_content)
-            
-            print(f"📝 Summary: {summary}")
-            if tags:
-                print(f"🏷️  Tags: {', '.join(tags)}")
-            print("✅ File updated with AI-generated metadata!")
-            
-        except Exception as e:
-            print(f"⚠️ Error updating file: {e}")
-            
-    elif ollama_available and not should_metadata and (not hasattr(args, 'metadata') or args.metadata is None):
-        # Only ask if not specified via command line AND auto-metadata is disabled
-        if not AUTO_METADATA and input("🤖 Generate AI summary and tags? (y/n): ").lower() == 'y':
-            print("🧠 Generating summary and tags...")
-            summary = get_summary_from_llm(transcribed_text)
-            tags = get_tags_from_llm(transcribed_text)
-            
-            try:
-                with open(full_path, "r") as f:
-                    current_content = f.read()
-                
-                updated_content = current_content.replace(
-                    "[Summary will be generated if requested]", 
-                    summary
-                )
-                
-                if tags:
-                    tags_to_add = "\n".join([f"  - {tag}" for tag in tags])
-                    updated_content = updated_content.replace(
-                        "tags:\n  - voice-note",
-                        f"tags:\n  - voice-note\n{tags_to_add}"
-                    )
-                
-                with open(full_path, "w") as f:
-                    f.write(updated_content)
-                
-                print(f"\n📝 Summary: {summary}")
-                if tags:
-                    print(f"🏷️  Tags: {', '.join(tags)}")
-                print("✅ File updated with AI-generated metadata!")
-                
-            except Exception as e:
-                print(f"⚠️ Error updating file: {e}")
-                
-    elif not ollama_available:
-        print("ℹ️  Ollama not available - AI features disabled. Transcription saved successfully!")
+        # Only ask if AUTO_OPEN is not explicitly set to false
+        if not AUTO_OPEN:
+            # Don't ask, just skip
+            pass
+        else:
+            # Ask user
+            if input("📂 Open the file? (y/n): ").lower() == 'y':
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.run([opener, full_path])
 
 def main(args=None):
     # Set defaults if no args provided
@@ -562,27 +580,24 @@ def main(args=None):
     print(transcribed_text)
     print("--------------------")
 
-    # 2. Quick filename generation and save immediately
-    ollama_available = check_ollama_available()
-    if ollama_available:
-        print("🧠 Generating filename...")
-    else:
-        print("📝 Creating filename (Ollama not available)...")
-    
-    base_name = get_filename_from_llm(transcribed_text)
-    timestamp = datetime.now().strftime("%d%m%y_%H%M")
-    final_filename = f"{base_name}_{timestamp}.{OUTPUT_FORMAT}"
-    full_path = os.path.join(SAVE_PATH, final_filename)
+    # 3. Copy to clipboard immediately (before LLM processing)
+    if AUTO_COPY:
+        pyperclip.copy(transcribed_text)
+        print("📋 Transcription copied to clipboard.")
 
-    # 3. Create initial file with basic template (no summary/tags yet)
+    # 4. Save file immediately with timestamp name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    unique_id = str(uuid.uuid4())[:6]
+    temp_filename = f"{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
+    temp_path = os.path.join(SAVE_PATH, temp_filename)
+    
+    # Create basic content
     templates = load_templates()
     now = datetime.now()
     created_date = now.strftime("%Y-%m-%d")
     created_time = now.strftime("%H:%M")
     
-    # Create basic content without summary/tags
     template_key = f"{OUTPUT_FORMAT}_template"
-    
     if template_key in templates:
         content = templates[template_key].format(
             created_date=created_date,
@@ -596,13 +611,62 @@ def main(args=None):
         # Fallback to simple format
         content = f"# Transcription: {now.strftime('%d %B %Y, %H:%M')}\n\n{transcribed_text}"
     
-    # 4. Save the transcript immediately
-    with open(full_path, "w") as f:
+    # Save immediately
+    with open(temp_path, "w") as f:
         f.write(content)
-    print(f"✅ Successfully saved transcript to: {full_path}")
+    print(f"✅ Successfully saved transcript to: {temp_path}")
+
+    # 4. Generate metadata and rename file (if Ollama available)
+    ollama_available = check_ollama_available()
+    final_path = temp_path  # Default to temp path
+    
+    if ollama_available:
+        metadata = get_combined_metadata_from_llm(transcribed_text)
+        
+        if metadata:
+            # Create final filename with unique ID preserved
+            final_filename = f"{metadata['filename']}_{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
+            final_path = os.path.join(SAVE_PATH, final_filename)
+            
+            # Rename file
+            os.rename(temp_path, final_path)
+            
+            # Update file with metadata
+            try:
+                with open(final_path, "r") as f:
+                    current_content = f.read()
+                
+                # Replace summary
+                updated_content = current_content.replace(
+                    "[Summary will be generated if requested]", 
+                    metadata['summary']
+                )
+                
+                # Add tags
+                if metadata['tags']:
+                    tags_to_add = "\n".join([f"  - {tag}" for tag in metadata['tags']])
+                    updated_content = updated_content.replace(
+                        "tags:\n  - voice-note",
+                        f"tags:\n  - voice-note\n{tags_to_add}"
+                    )
+                
+                with open(final_path, "w") as f:
+                    f.write(updated_content)
+                
+                print(f"📝 Summary: {metadata['summary']}")
+                if metadata['tags']:
+                    print(f"🏷️  Tags: {', '.join(metadata['tags'])}")
+                print(f"✅ File renamed to: {final_path}")
+                
+            except Exception as e:
+                print(f"⚠️ Error updating file with metadata: {e}")
+        else:
+            print("⚠️ Could not generate metadata, keeping original filename")
+    else:
+        print("ℹ️  Ollama not available - keeping timestamp filename")
 
     # 5. Handle post-transcription actions
-    handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args)
+    handle_post_transcription_actions(transcribed_text, final_path, ollama_available, args)
 
 if __name__ == "__main__":
     # Parse command line arguments

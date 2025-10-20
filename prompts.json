@@ -10,5 +10,9 @@
   "tag_generation": {
     "prompt": "Based on the following transcription, suggest 2-5 relevant tags that would help categorize this voice note.\nReturn only the tags, separated by commas, in lowercase.\nDo not include 'voice-note' as it's already included.\nFocus on topics, themes, or categories mentioned in the content.\n\nTranscription: \"{text}\"\n\nTags:",
     "description": "Generates relevant tags for categorizing voice notes"
+  },
+  "combined_metadata": {
+    "prompt": "Generate metadata for this voice note transcription. Return ONLY valid JSON with no extra text.\n\nTranscription: \"{text}\"\n\nGenerate:\n{{\n  \"filename\": \"short_descriptive_name\",\n  \"summary\": \"one sentence summary\",\n  \"tags\": [\"tag1\", \"tag2\", \"tag3\"]\n}}",
+    "description": "Generates all metadata in one call"
   }
 }
