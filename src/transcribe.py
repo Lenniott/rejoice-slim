@@ -153,50 +153,7 @@ def deduplicate_transcript(transcript: str) -> str:
     
     return ' '.join(words)
 
-def get_filename_from_llm(text_content):
-    """Asks Ollama for a concise filename, falls back to 'voice_note' if unavailable."""
-    if not check_ollama_available():
-        return "voice_note"
-    
-    prompts = load_prompts()
-    result = call_ollama("filename_generation", text_content, prompts)
-    
-    if result:
-        # Extract only alphanumeric words and underscores, limit length
-        import re
-        words = re.findall(r'[a-zA-Z0-9_]+', result)
-        if words:
-            # Take first 5 words max, join with underscores
-            filename = '_'.join(words[:5])
-            # Limit total length to 50 characters to avoid filesystem issues
-            filename = filename[:50].lower()
-            return filename if filename else "voice_note"
-    
-    return "voice_note"
-
-def get_summary_from_llm(text_content):
-    """Asks Ollama for a one-sentence summary."""
-    if not check_ollama_available():
-        return "A voice note transcription."
-    
-    prompts = load_prompts()
-    result = call_ollama("summary_generation", text_content, prompts)
-    return result if result else "A voice note transcription."
-
-def get_tags_from_llm(text_content):
-    """Asks Ollama for relevant tags."""
-    if not check_ollama_available():
-        return []
-    
-    prompts = load_prompts()
-    result = call_ollama("tag_generation", text_content, prompts)
-    
-    if result:
-        # Clean up tags: split by comma, clean whitespace, remove empty
-        tags = [tag.strip().lower() for tag in result.split(',') if tag.strip()]
-        return tags[:5]  # Limit to 5 tags max
-    
-    return []
+# Old individual LLM functions removed - now using combined_metadata
 
 def get_combined_metadata_from_llm(text_content):
     """Gets filename, summary, and tags in one LLM call."""
