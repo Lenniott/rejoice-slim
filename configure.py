@@ -56,6 +56,37 @@ def main():
     # Get VAD settings (for future auto-stop feature)
     print("\n--- Voice Activity Detection Settings ---")
     silence_trigger = input("Silence trigger chunks for auto-stop [default: 30]: ") or "30"
+    
+    # Get microphone device selection
+    print("\n--- Microphone Device Selection ---")
+    try:
+        import sounddevice as sd
+        devices = sd.query_devices()
+        input_devices = []
+        print("\nAvailable audio input devices:")
+        for i, device in enumerate(devices):
+            if device['max_input_channels'] > 0:
+                print(f"  {i}: {device['name']}")
+                input_devices.append(i)
+        
+        if input_devices:
+            device_choice = input("Enter device number (-1 for system default) [default: -1]: ").strip() or "-1"
+            try:
+                device_num = int(device_choice)
+                if device_num == -1 or device_num in input_devices:
+                    mic_device = str(device_num)
+                else:
+                    print("⚠️ Invalid device number, using system default")
+                    mic_device = "-1"
+            except ValueError:
+                print("⚠️ Invalid input, using system default")
+                mic_device = "-1"
+        else:
+            print("⚠️ No audio input devices found, using system default")
+            mic_device = "-1"
+    except ImportError:
+        print("⚠️ sounddevice not available, using system default")
+        mic_device = "-1"
 
     # Write configuration to .env file
     with open(".env", "w") as f:
@@ -73,6 +104,7 @@ def main():
         f.write(f"TRANSCRIPTION_WORKER_THREADS={worker_threads}\n")
         f.write(f"MAX_RETRY_ATTEMPTS={max_retries}\n")
         f.write(f"SILENCE_TRIGGER_CHUNKS={silence_trigger}\n")
+        f.write(f"DEFAULT_MIC_DEVICE={mic_device}\n")
 
     print("\n🎉 Setup complete! Configuration saved to .env")
     print("The necessary aliases have been prepared.")

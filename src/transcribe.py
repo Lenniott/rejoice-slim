@@ -45,6 +45,9 @@ TRANSCRIPTION_WORKER_THREADS = int(os.getenv("TRANSCRIPTION_WORKER_THREADS", "2"
 MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
 SILENCE_TRIGGER_CHUNKS = int(os.getenv("SILENCE_TRIGGER_CHUNKS", "30"))
 
+# Audio device configuration
+DEFAULT_MIC_DEVICE = int(os.getenv("DEFAULT_MIC_DEVICE", "-1"))
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -155,6 +158,18 @@ def deduplicate_transcript(transcript: str) -> str:
 
 # Old individual LLM functions removed - now using combined_metadata
 
+def list_audio_devices():
+    """List all available audio input devices"""
+    import sounddevice as sd
+    devices = sd.query_devices()
+    print("\nAvailable audio input devices:")
+    input_devices = []
+    for i, device in enumerate(devices):
+        if device['max_input_channels'] > 0:
+            print(f"  {i}: {device['name']}")
+            input_devices.append((i, device['name']))
+    return input_devices
+
 def get_combined_metadata_from_llm(text_content):
     """Gets filename, summary, and tags in one LLM call."""
     if not check_ollama_available():
@@ -261,9 +276,10 @@ def settings_menu():
         print(f"6. Auto Copy: {'Yes' if AUTO_COPY else 'No'}")
         print(f"7. Auto Open: {'Yes' if AUTO_OPEN else 'No'}")
         print(f"8. Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
-        print(f"9. Exit Settings")
+        print(f"9. Microphone Device: {DEFAULT_MIC_DEVICE if DEFAULT_MIC_DEVICE != -1 else 'System Default'}")
+        print(f"10. Exit Settings")
         
-        choice = input("\nWhat would you like to change? (1-9): ").strip()
+        choice = input("\nWhat would you like to change? (1-10): ").strip()
         
         if choice == "1":
             print("\nAvailable Whisper Models:")
@@ -350,13 +366,32 @@ def settings_menu():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "9":
+            print("\n--- Microphone Device Selection ---")
+            devices = list_audio_devices()
+            if devices:
+                print(f"\nCurrent device: {DEFAULT_MIC_DEVICE if DEFAULT_MIC_DEVICE != -1 else 'System Default'}")
+                device_choice = input("Enter device number (-1 for system default): ").strip()
+                try:
+                    device_num = int(device_choice)
+                    if device_num == -1 or any(device_num == dev[0] for dev in devices):
+                        update_env_setting("DEFAULT_MIC_DEVICE", str(device_num))
+                        print(f"✅ Microphone device changed to: {device_num if device_num != -1 else 'System Default'}")
+                        print("⚠️ Restart the script to use the new device")
+                    else:
+                        print("❌ Invalid device number")
+                except ValueError:
+                    print("❌ Please enter a valid number")
+            else:
+                print("❌ No audio input devices found")
+        
+        elif choice == "10":
             print("👋 Exiting settings...")
             break
         
         else:
-            print("❌ Invalid choice. Please select 1-9.")
+            print("❌ Invalid choice. Please select 1-10.")
 
-def record_audio_chunked() -> Optional[str]:
+def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
     """
     Records audio with real-time chunking and transcription.
     
@@ -439,8 +474,9 @@ def record_audio_chunked() -> Optional[str]:
         chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
         chunk_thread.start()
         
-        # Start audio recording
-        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback)
+        # Start audio recording with configured device (or override)
+        device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
+        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback, device=device)
         stream.start()
         
         # Wait for user to press Enter
@@ -526,7 +562,8 @@ def main(args=None):
         args = type('Args', (), {})()
     
     # 1. Record Audio with real-time chunking and transcription
-    transcribed_text = record_audio_chunked()
+    device_override = args.device if hasattr(args, 'device') and args.device is not None else None
+    transcribed_text = record_audio_chunked(device_override)
     if not transcribed_text:
         return
 
@@ -642,6 +679,8 @@ if __name__ == "__main__":
                        help='Auto generate AI summary and tags')
     parser.add_argument('--no-metadata', action='store_false', dest='metadata',
                        help='Do not generate AI summary and tags')
+    parser.add_argument('--device', type=int, 
+                       help='Override default mic device for this recording')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
