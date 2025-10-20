@@ -1,0 +1,9 @@
+# requirements.txt
+
+openai-whisper
+sounddevice
+scipy
+numpy
+python-dotenv
+requests
+pyperclip

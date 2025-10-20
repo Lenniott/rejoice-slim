@@ -1,0 +1,14 @@
+{
+  "filename_generation": {
+    "prompt": "Based on the following text, generate a short, descriptive, snake_case filename of 3-5 words.\nDo not include any file extension or date. Just the name.\nDo not include any reasoning or thinking process, just return the filename.\n\nText: \"{text}\"\n\nFilename:",
+    "description": "Generates concise filenames for transcripts"
+  },
+  "summary_generation": {
+    "prompt": "Based on the following transcription, write a brief, one-sentence summary that captures the main topic or purpose of the voice note.\nKeep it concise and informative.\nDo not include any reasoning or thinking process, just return the summary.\n\nTranscription: \"{text}\"\n\nSummary:",
+    "description": "Creates one-sentence summaries of voice notes"
+  },
+  "tag_generation": {
+    "prompt": "Based on the following transcription, suggest 2-5 relevant tags that would help categorize this voice note.\nReturn only the tags, separated by commas, in lowercase.\nDo not include 'voice-note' as it's already included.\nFocus on topics, themes, or categories mentioned in the content.\n\nTranscription: \"{text}\"\n\nTags:",
+    "description": "Generates relevant tags for categorizing voice notes"
+  }
+}
