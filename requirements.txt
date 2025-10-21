@@ -1,9 +1,44 @@
-# requirements.txt
+# Core Voice Transcription Dependencies
+# Each package serves a specific purpose for local, offline transcription
 
-openai-whisper
-sounddevice
-scipy
-numpy
-python-dotenv
-requests
-pyperclip
+# Speech-to-Text Engine (Local AI)
+openai-whisper>=20231117
+# - Converts audio to text completely offline
+# - No API calls or cloud services
+# - Supports 99+ languages
+# - Multiple model sizes (tiny to large)
+
+# Audio Recording & Processing
+sounddevice>=0.4.6
+# - Professional audio recording from microphone
+# - Reliable cross-platform microphone access
+# - Concurrent recording (works while Zoom/music playing)
+# - Requires PortAudio (installed via Homebrew on macOS)
+
+scipy>=1.11.0
+# - Audio file format support (WAV, MP3, etc.)
+# - Required by sounddevice for audio processing
+# - Handles sample rate conversion
+
+numpy>=1.24.0
+# - Audio data processing and manipulation
+# - Required by Whisper for tensor operations
+# - Core dependency for audio math operations
+
+# Configuration & Utilities
+python-dotenv>=1.0.0
+# - Loads settings from .env file
+# - Manages user configuration (paths, models, etc.)
+# - No network access, pure file operations
+
+# AI Features (Optional - only used if Ollama installed)
+requests>=2.25.1
+# - Communicates with local Ollama server (localhost only)
+# - Generates smart filenames and summaries
+# - Zero external network requests
+
+# Clipboard Integration
+pyperclip>=1.8.2
+# - Auto-copy transcripts to clipboard (optional)
+# - Works offline, no network access
+# - Pure system integration
