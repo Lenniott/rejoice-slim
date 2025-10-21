@@ -40,6 +40,7 @@ AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
 
 # Real-time chunking configuration
@@ -88,7 +89,7 @@ def load_templates():
 def check_ollama_available():
     """Check if Ollama is available and running"""
     try:
-        response = requests.get("http://localhost:11434/api/version", timeout=2)
+        response = requests.get("http://localhost:11434/api/version", timeout=5)
         return response.status_code == 200
     except:
         return False
@@ -114,7 +115,7 @@ def call_ollama(prompt_key, text_content, prompts):
                 "max_tokens": 200  # Limit response length for speed
             }
         }
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=10)
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=OLLAMA_TIMEOUT)
         response.raise_for_status()
         
         # Get response and clean it up
@@ -131,8 +132,19 @@ def call_ollama(prompt_key, text_content, prompts):
         
         return cleaned if cleaned else None
         
+    except requests.exceptions.Timeout:
+        timeout_minutes = OLLAMA_TIMEOUT // 60
+        timeout_seconds = OLLAMA_TIMEOUT % 60
+        time_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+        print(f"⚠️ Ollama response timed out after {time_str}")
+        print("💡 Tip: Use a faster model or increase timeout with: export OLLAMA_TIMEOUT=300")
+        return None
+    except requests.exceptions.ConnectionError:
+        print(f"⚠️ Could not connect to Ollama for {prompt_key}")
+        print("💡 Tip: Make sure Ollama is running with: ollama serve")
+        return None
     except Exception as e:
-        print(f"⚠️ Could not connect to Ollama for {prompt_key} ({e})")
+        print(f"⚠️ Ollama error for {prompt_key}: {e}")
         return None
 
 def deduplicate_transcript(transcript: str) -> str:
@@ -425,15 +437,21 @@ def output_settings():
 def ai_settings():
     """AI settings submenu"""
     while True:
+        timeout_minutes = OLLAMA_TIMEOUT // 60
+        timeout_seconds = OLLAMA_TIMEOUT % 60
+        timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+        
         print(f"\n🤖 AI Settings")
         print("─" * 15)
         print(f"Current Ollama Model: {OLLAMA_MODEL}")
         print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"Ollama Timeout: {timeout_str}")
         print(f"\n1. Change Ollama Model")
         print(f"2. Toggle Auto Metadata")
-        print(f"3. ← Back to Main Menu")
+        print(f"3. Change Ollama Timeout")
+        print(f"4. ← Back to Main Menu")
         
-        choice = input("\n👉 Choose option (1-3): ").strip()
+        choice = input("\n👉 Choose option (1-4): ").strip()
         
         if choice == "1":
             print("\nSuggested Ollama Models:")
@@ -457,9 +475,32 @@ def ai_settings():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "3":
+            current_timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
+            print(f"\nCurrent timeout: {current_timeout} seconds")
+            print("Recommended timeouts:")
+            print("  • 60s  - Fast models (gemma3:270m, qwen3:0.6b)")
+            print("  • 180s - Medium models (gemma3:4b, llama3)")  
+            print("  • 300s - Large models (llama3:70b)")
+            
+            new_timeout = input(f"Enter timeout in seconds (30-600) [current: {current_timeout}]: ").strip()
+            try:
+                timeout = int(new_timeout) if new_timeout else current_timeout
+                if 30 <= timeout <= 600:
+                    update_env_setting("OLLAMA_TIMEOUT", str(timeout))
+                    timeout_minutes = timeout // 60
+                    timeout_seconds = timeout % 60
+                    timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+                    print(f"✅ Ollama timeout changed to: {timeout_str}")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Timeout must be between 30 and 600 seconds (10 minutes)")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "4":
             break
         else:
-            print("❌ Invalid choice. Please select 1-3.")
+            print("❌ Invalid choice. Please select 1-4.")
 
 def audio_settings():
     """Audio settings submenu"""
