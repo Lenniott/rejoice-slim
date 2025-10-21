@@ -240,7 +240,7 @@ def get_combined_metadata_from_llm(text_content):
                 # Clean up tags
                 tags = metadata['tags']
                 if isinstance(tags, list):
-                    tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                    tags = [tag.strip().lower().replace(' ', '-') for tag in tags if tag.strip()]
                     tags = tags[:5]  # Limit to 5 tags max
                 else:
                     tags = []
