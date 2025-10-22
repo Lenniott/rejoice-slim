@@ -22,6 +22,10 @@ import threading
 import queue
 import logging
 import uuid
+import signal
+import select
+import termios
+import tty
 from typing import Optional, Dict, Any
 
 # Import our new chunking components
@@ -284,35 +288,45 @@ def update_env_setting(key, value):
 
 def settings_menu():
     """Interactive settings menu with categories"""
-    print("\n⚙️  Settings Menu")
-    print("─" * 50)
-    
-    while True:
-        print("\n📋 Settings Categories:")
-        print("  1. 📝 Transcription (Whisper model, language)")
-        print("  2. 📁 Output (Format, save path, auto-actions)")
-        print("  3. 🤖 AI (Ollama model, auto-metadata)")
-        print("  4. 🎤 Audio (Microphone device)")
-        print("  5. ⚡ Performance (Chunking, auto-stop)")
-        print("  6. 🚪 Exit")
+    try:
+        print("\n⚙️  Settings Menu")
+        print("─" * 50)
         
-        choice = input("\n👉 Choose a category (1-6): ").strip()
-        
-        if choice == "1":
-            transcription_settings()
-        elif choice == "2":
-            output_settings()
-        elif choice == "3":
-            ai_settings()
-        elif choice == "4":
-            audio_settings()
-        elif choice == "5":
-            advanced_performance_settings()
-        elif choice == "6":
-            print("👋 Exiting settings...")
-            break
+        while True:
+            print("\n📋 Settings Categories:")
+            print("  1. 📝 Transcription (Whisper model, language)")
+            print("  2. 📁 Output (Format, save path, auto-actions)")
+            print("  3. 🤖 AI (Ollama model, auto-metadata)")
+            print("  4. 🎤 Audio (Microphone device)")
+            print("  5. ⚡ Performance (Chunking, auto-stop)")
+            print("  6. 🚪 Exit")
+            
+            choice = input("\n👉 Choose a category (1-6): ").strip()
+            
+            if choice == "1":
+                transcription_settings()
+            elif choice == "2":
+                output_settings()
+            elif choice == "3":
+                ai_settings()
+            elif choice == "4":
+                audio_settings()
+            elif choice == "5":
+                advanced_performance_settings()
+            elif choice == "6":
+                print("👋 Exiting settings...")
+                break
+            else:
+                print("❌ Invalid choice. Please select 1-6.")
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n\n👋 Settings menu cancelled by user (Ctrl+C).")
         else:
-            print("❌ Invalid choice. Please select 1-6.")
+            print("\n\n👋 Settings menu cancelled by user.")
+    except EOFError:
+        print("\n\n👋 Settings menu closed.")
+    except Exception as e:
+        print(f"\n❌ Error in settings menu: {e}")
 
 def transcription_settings():
     """Transcription settings submenu"""
@@ -590,14 +604,96 @@ def advanced_performance_settings():
         else:
             print("❌ Invalid choice. Please select 1-3.")
 
+def setup_keyboard_handler():
+    """Set up terminal for non-blocking keyboard input."""
+    if sys.platform != "win32":  # Unix-like systems
+        try:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            tty.setraw(sys.stdin.fileno())
+            return fd, old_settings
+        except (OSError, termios.error):
+            # Terminal doesn't support raw mode (e.g., in some IDEs)
+            return None, None
+    return None, None
+
+def restore_keyboard_handler(fd, old_settings):
+    """Restore terminal settings."""
+    if fd is not None and old_settings is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+def check_keyboard_input(fd):
+    """Check for keyboard input without blocking."""
+    if sys.platform == "win32":
+        # Windows implementation (simplified)
+        try:
+            import msvcrt
+            return msvcrt.kbhit()
+        except ImportError:
+            # Fallback if msvcrt not available
+            return False
+    else:
+        # Unix-like systems
+        try:
+            return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+        except (OSError, ValueError):
+            # Fallback if select doesn't work (e.g., in some IDEs)
+            return False
+
+def get_keyboard_char():
+    """Get a keyboard character."""
+    if sys.platform == "win32":
+        try:
+            import msvcrt
+            return msvcrt.getch().decode('utf-8')
+        except ImportError:
+            return sys.stdin.readline().strip()
+    else:
+        return sys.stdin.read(1)
+
+# Global cancellation state - accessible from signal handler
+_global_recording_state = {
+    'recording_event': None,
+    'cancelled': None,
+    'original_handler': None
+}
+
+def _global_signal_handler(signum, frame):
+    """Global signal handler for Ctrl+C."""
+    try:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Recording cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Recording cancelled by user.")
+        
+        # Set global cancellation state
+        if _global_recording_state['cancelled']:
+            _global_recording_state['cancelled'].set()
+        if _global_recording_state['recording_event']:
+            _global_recording_state['recording_event'].clear()
+            
+        # Force flush to ensure message is shown immediately
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        # Ensure we always set the cancelled flag even if printing fails
+        if _global_recording_state['cancelled']:
+            _global_recording_state['cancelled'].set()
+        if _global_recording_state['recording_event']:
+            _global_recording_state['recording_event'].clear()
+
 def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
     """
     Records audio with real-time chunking and transcription.
     
     Returns:
-        str or None: Complete assembled transcript, or None if recording failed
+        str or None: Complete assembled transcript, or None if recording failed or cancelled
     """
-    print("🔴 Recording... Press Enter to stop.")
+    # Platform-specific messaging for keyboard shortcuts
+    if sys.platform == "darwin":  # macOS
+        print("🔴 Recording... Press Enter to stop, Ctrl+C (^C) to cancel.")
+    else:
+        print("🔴 Recording... Press Enter to stop, Ctrl+C to cancel.")
     
     # Initialize components
     chunker = AudioChunker(
@@ -606,31 +702,66 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         sample_rate=SAMPLE_RATE
     )
     
-    # Load Whisper model
+    # Load Whisper model with clean interruption handling
     print("🤫 Loading Whisper model...")
-    whisper_model = whisper.load_model(WHISPER_MODEL)
+    try:
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Loading cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Loading cancelled by user.")
+        return None
+    except Exception as e:
+        print(f"\n❌ Error loading Whisper model: {e}")
+        return None
     
     # Initialize worker pool
-    worker_pool = TranscriptionWorkerPool(
-        whisper_model=whisper_model,
-        whisper_language=WHISPER_LANGUAGE,
-        num_workers=TRANSCRIPTION_WORKER_THREADS,
-        max_retry_attempts=MAX_RETRY_ATTEMPTS
-    )
-    
-    # Initialize VAD service
-    vad_service = VADService(
-        silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
-        chunk_duration_seconds=CHUNK_DURATION_SECONDS
-    )
+    try:
+        worker_pool = TranscriptionWorkerPool(
+            whisper_model=whisper_model,
+            whisper_language=WHISPER_LANGUAGE,
+            num_workers=TRANSCRIPTION_WORKER_THREADS,
+            max_retry_attempts=MAX_RETRY_ATTEMPTS
+        )
+        
+        # Initialize VAD service
+        vad_service = VADService(
+            silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
+            chunk_duration_seconds=CHUNK_DURATION_SECONDS
+        )
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Initialization cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Initialization cancelled by user.")
+        return None
+    except Exception as e:
+        print(f"\n❌ Error during initialization: {e}")
+        return None
     
     # Threading control
     recording_event = threading.Event()
     recording_event.set()
     stop_event = threading.Event()
+    cancelled = threading.Event()
     
     # Audio data collection
     audio_data = []
+    
+    # Keyboard handling setup
+    fd, old_settings = setup_keyboard_handler()
+    
+    # Set up global signal handler (only works in main thread)
+    try:
+        _global_recording_state['recording_event'] = recording_event
+        _global_recording_state['cancelled'] = cancelled
+        _global_recording_state['original_handler'] = signal.signal(signal.SIGINT, _global_signal_handler)
+        signal_handler_setup = True
+    except ValueError as e:
+        # Not in main thread - can't set up signal handler
+        print("⚠️  Note: Ctrl+C handling not available (not in main thread)")
+        signal_handler_setup = False
     
     def audio_callback(indata, frames, time, status):
         """Callback for sounddevice audio stream."""
@@ -664,6 +795,46 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
                 logging.error(f"Error processing chunks: {e}")
                 break
     
+    def keyboard_listener():
+        """Listen for keyboard input in a separate thread."""
+        try:
+            # Try advanced keyboard handling first
+            if fd is not None:
+                while recording_event.is_set() and not cancelled.is_set():
+                    if check_keyboard_input(fd):
+                        char = get_keyboard_char()
+                        if char == '\r' or char == '\n':  # Enter key
+                            print("\n✅ Recording stopped by user.")
+                            recording_event.clear()
+                            break
+                        elif ord(char) == 3:  # Ctrl+C (ASCII 3)
+                            print("\n🚫 Recording cancelled by user (Ctrl+C detected in keyboard listener).")
+                            cancelled.set()
+                            recording_event.clear()
+                            break
+                    threading.Event().wait(0.1)  # Small delay to prevent busy waiting
+            else:
+                # Fallback to simple input() for environments that don't support raw terminal
+                try:
+                    input()  # This will block until Enter is pressed
+                    if recording_event.is_set():  # Only stop if still recording
+                        print("\n✅ Recording stopped by user.")
+                        recording_event.clear()
+                except (EOFError, KeyboardInterrupt):
+                    if recording_event.is_set():
+                        print("\n🚫 Recording cancelled by user.")
+                        cancelled.set()
+                        recording_event.clear()
+        except KeyboardInterrupt:
+            # Backup Ctrl+C handling in keyboard listener
+            print("\n🚫 Recording cancelled by user (Ctrl+C in keyboard thread).")
+            cancelled.set()
+            recording_event.clear()
+        except Exception as e:
+            logging.error(f"Keyboard listener error: {e}")
+            # Final fallback - just wait for a bit and let other controls handle stopping
+            pass
+    
     try:
         # Start worker pool
         worker_pool.start()
@@ -673,17 +844,36 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
         chunk_thread.start()
         
+        # Start keyboard listener thread
+        keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
+        keyboard_thread.start()
+        
         # Start audio recording with configured device (or override)
         device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
         stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback, device=device)
         stream.start()
         
-        # Wait for user to press Enter
-        input()
+        # Wait for recording to be stopped (by Enter key, Ctrl+C, or other means)
+        try:
+            while recording_event.is_set() and not cancelled.is_set():
+                threading.Event().wait(0.05)  # Check more frequently
+        except KeyboardInterrupt:
+            # Backup Ctrl+C handling in case signal handler doesn't work
+            if sys.platform == "darwin":  # macOS
+                print("\n🚫 Recording cancelled by user (Ctrl+C).")
+            else:
+                print("\n🚫 Recording cancelled by user.")
+            cancelled.set()
+            recording_event.clear()
         
         # Stop recording
         stream.stop()
         stream.close()
+        
+        # Check if recording was cancelled
+        if cancelled.is_set():
+            print("Recording cancelled. No file will be saved.")
+            return None
         
         print("\nRecording finished. Processing final chunk...")
         
@@ -728,6 +918,18 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     finally:
         # Ensure cleanup
         recording_event.clear()
+        
+        # Restore terminal settings
+        restore_keyboard_handler(fd, old_settings)
+        
+        # Restore original signal handler
+        if signal_handler_setup and _global_recording_state['original_handler']:
+            signal.signal(signal.SIGINT, _global_recording_state['original_handler'])
+            _global_recording_state['original_handler'] = None
+            _global_recording_state['recording_event'] = None
+            _global_recording_state['cancelled'] = None
+        
+        # Clean up components
         if 'worker_pool' in locals():
             worker_pool.stop()
         if 'vad_service' in locals():
@@ -756,14 +958,25 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
                 subprocess.run([opener, full_path])
 
 def main(args=None):
-    # Set defaults if no args provided
-    if args is None:
-        args = type('Args', (), {})()
-    
-    # 1. Record Audio with real-time chunking and transcription
-    device_override = args.device if hasattr(args, 'device') and args.device is not None else None
-    transcribed_text = record_audio_chunked(device_override)
-    if not transcribed_text:
+    try:
+        # Set defaults if no args provided
+        if args is None:
+            args = type('Args', (), {})()
+        
+        # 1. Record Audio with real-time chunking and transcription
+        device_override = args.device if hasattr(args, 'device') and args.device is not None else None
+        transcribed_text = record_audio_chunked(device_override)
+        if not transcribed_text:
+            return
+    except KeyboardInterrupt:
+        # Clean exit on Ctrl+C at any point in the main function
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Operation cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Operation cancelled by user.")
+        return
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
         return
 
     # 2. Deduplicate transcript to remove any repetition from chunk overlap
@@ -886,9 +1099,20 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    if not all([SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL, OLLAMA_MODEL]):
-        print("❌ Configuration is missing. Please run the setup.sh script first.")
-    elif args.settings:
-        settings_menu()
-    else:
-        main(args)
+    try:
+        if not all([SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL, OLLAMA_MODEL]):
+            print("❌ Configuration is missing. Please run the setup.sh script first.")
+        elif args.settings:
+            settings_menu()
+        else:
+            main(args)
+    except KeyboardInterrupt:
+        # Clean exit on Ctrl+C at the script level
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Script cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Script cancelled by user.")
+        sys.exit(130)  # Standard exit code for Ctrl+C
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        sys.exit(1)
