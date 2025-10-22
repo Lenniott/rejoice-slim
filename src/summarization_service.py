@@ -10,7 +10,7 @@ import json
 import yaml
 import re
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from file_header import TranscriptHeader
 
 
@@ -99,7 +99,7 @@ class SummarizationService:
                 
                 # With structured outputs, response should already be valid JSON
                 if raw_response.strip():
-                    print(f"   📋 Structured response received: {len(raw_response)} chars")
+                    print(f"   📋 Summary generated: {len(raw_response)} chars")
                     return raw_response.strip()
                 else:
                     print(f"   ⚠️ Empty structured response from Ollama (attempt {attempt + 1})")
@@ -331,6 +331,61 @@ JSON:"""
         
         return None
 
+    def _create_smart_chunks(self, text: str, chunk_size: int, overlap: int) -> List[str]:
+        """
+        Create chunks with smart boundary detection to avoid cutting mid-sentence.
+        """
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            # Calculate end position
+            end = start + chunk_size
+            
+            if end >= len(text):
+                # Last chunk
+                chunks.append(text[start:].strip())
+                break
+            
+            # Look for good break points near the target end
+            # Priority: paragraph break > sentence end > word boundary
+            break_point = end
+            
+            # Look backward from end for good break points (up to 200 chars)
+            search_start = max(start + chunk_size - 200, start)
+            search_text = text[search_start:end + 100]  # Look a bit ahead too
+            
+            # Find paragraph breaks (double newlines)
+            paragraph_breaks = [m.start() + search_start for m in re.finditer(r'\n\s*\n', search_text)]
+            if paragraph_breaks:
+                suitable_breaks = [bp for bp in paragraph_breaks if bp > start + chunk_size // 2]
+                if suitable_breaks:
+                    break_point = suitable_breaks[0]
+            
+            # If no paragraph break, find sentence endings
+            if break_point == end:
+                sentence_endings = [m.end() + search_start for m in re.finditer(r'[.!?]\s+', search_text)]
+                suitable_endings = [se for se in sentence_endings if start + chunk_size // 2 < se < start + chunk_size + 100]
+                if suitable_endings:
+                    break_point = suitable_endings[-1]  # Take the last suitable sentence end
+            
+            # If still no good break, find word boundaries
+            if break_point == end:
+                word_boundaries = [m.start() + search_start for m in re.finditer(r'\s+', search_text)]
+                suitable_words = [wb for wb in word_boundaries if start + chunk_size // 2 < wb < start + chunk_size + 50]
+                if suitable_words:
+                    break_point = suitable_words[-1]
+            
+            # Create chunk
+            chunk = text[start:break_point].strip()
+            if chunk:
+                chunks.append(chunk)
+            
+            # Next chunk starts with overlap
+            start = max(break_point - overlap, start + 1)
+        
+        return chunks
+
     def _hierarchical_summarize(self, text_content: str) -> Optional[Dict[str, Any]]:
         """
         Hierarchical summarization: chunk -> summarize each -> meta-summarize.
@@ -340,15 +395,10 @@ JSON:"""
             print("❌ Hierarchical summarization prompts not found")
             return None
         
-        # Step 1: Break into chunks (overlap for context preservation)
-        chunk_size = 2000  # Smaller chunks for better processing
-        overlap = 200      # Overlap to preserve context
-        chunks = []
-        
-        for i in range(0, len(text_content), chunk_size - overlap):
-            chunk = text_content[i:i + chunk_size]
-            if chunk.strip():
-                chunks.append(chunk)
+        # Step 1: Break into chunks with smart boundary detection
+        chunk_size = 1800   # Slightly smaller for more consistent processing
+        overlap = 150       # Reduced overlap for cleaner boundaries
+        chunks = self._create_smart_chunks(text_content, chunk_size, overlap)
         
         print(f"   📑 Processing {len(chunks)} chunks of ~{chunk_size} characters each")
         

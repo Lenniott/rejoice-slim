@@ -75,20 +75,27 @@ class TranscriptFileManager:
     
     def find_transcript(self, id_reference: str) -> Optional[str]:
         """
-        Find transcript file by ID reference.
+        Find transcript file by ID reference using flexible matching.
         
         Args:
             id_reference: ID reference (e.g., "123456", "-123456")
             
         Returns:
             str or None: Full path to transcript file, or None if not found
+        
+        Raises:
+            ValueError: If multiple files match the same ID
         """
         # Parse the reference to get clean ID
         clean_id = self.id_generator.parse_reference_id(id_reference)
         if not clean_id:
             return None
         
-        return self.id_generator.find_transcript_by_id(clean_id)
+        try:
+            return self.id_generator.find_transcript_by_id(clean_id)
+        except ValueError as e:
+            # Re-raise with more context about the ID reference
+            raise ValueError(f"ID conflict for reference '{id_reference}': {str(e)}")  from e
     
     def append_to_transcript(self, id_reference: str, 
                            additional_text: str,
@@ -248,8 +255,11 @@ class TranscriptFileManager:
             
         Returns:
             str or None: Transcript content, or None if not found
+        
+        Raises:
+            ValueError: If multiple files match the same ID
         """
-        file_path = self.find_transcript(id_reference)
+        file_path = self.find_transcript(id_reference)  # This can raise ValueError
         if not file_path:
             return None
         

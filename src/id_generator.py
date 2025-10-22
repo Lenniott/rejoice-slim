@@ -97,22 +97,29 @@ class TranscriptIDGenerator:
     
     def find_transcript_by_id(self, id_str: str) -> Optional[str]:
         """
-        Find transcript file by ID.
+        Find transcript file by ID using flexible matching.
+        Looks for files where the last part after the final underscore matches the ID.
         
         Args:
             id_str: ID string to find
             
         Returns:
             str or None: Full path to transcript file, or None if not found
+        
+        Raises:
+            ValueError: If multiple files match the same ID
         """
         if not self._is_valid_id(id_str):
             return None
         
-        # Convert to integer and back to handle zero-padding differences
+        # Convert to integer to handle zero-padding differences
         id_num = int(id_str)
         
-        # Look for files that match this ID numerically
-        id_pattern = re.compile(r'^.*_\d{8}_(\d+)\.(txt|md)$')
+        # Flexible pattern: any filename ending with _ID.ext
+        # This matches both new format (name_DDMMYYYY_ID.md) and any other format with _ID at the end
+        id_pattern = re.compile(r'^.*_(\d+)\.(txt|md)$')
+        
+        matching_files = []
         
         try:
             for filename in os.listdir(self.save_path):
@@ -120,9 +127,17 @@ class TranscriptIDGenerator:
                 if match:
                     file_id_num = int(match.group(1))
                     if file_id_num == id_num:
-                        return os.path.join(self.save_path, filename)
+                        matching_files.append(filename)
         except OSError:
-            pass
+            return None
+        
+        if len(matching_files) == 0:
+            return None
+        elif len(matching_files) == 1:
+            return os.path.join(self.save_path, matching_files[0])
+        else:
+            # Multiple files match - this is an error condition
+            raise ValueError(f"Multiple files found with ID {id_num}: {', '.join(matching_files)}")
         
         return None
     

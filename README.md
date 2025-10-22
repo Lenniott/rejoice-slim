@@ -8,7 +8,7 @@ Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for
 
 - 🎤 **One-command recording** - Start transcribing with `rec`
 - 🆔 **Smart ID system** - Easy-to-reference transcripts with descriptive names
-- ➕ **Append to transcripts** - Add to existing recordings with `rec -000001`
+- ➕ **Append to transcripts** - Add to existing recordings with `rec -{id}`
 - 🤖 **AI-powered analysis** - Hierarchical summarization extracts key themes, questions, and actions
 - 📝 **Obsidian-ready** - Markdown format with YAML frontmatter
 - 🔄 **Real-time transcription** - See your words appear as you speak
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/benjamayden/rejoice-slim/main/setup
 rec                              # Start recording (creates smart_filename_22102025_000001.md, etc.)
 rec -000001                      # Append to existing transcript by ID
 rec -l                           # Show all transcripts with their IDs
-rec -v 000001                    # View content of transcript by ID
+rec -v 000001                    # View content of transcript by ID (id is the last number on the filename)
 rec -g 000001                    # AI analysis: extract themes, questions, actions
 rec -s                           # Configure settings
 ```

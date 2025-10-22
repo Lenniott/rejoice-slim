@@ -1064,6 +1064,10 @@ def show_transcript(id_reference):
             print(f"❌ Transcript with ID '{id_reference}' not found.")
             print("💡 Use 'rec --list' to see available transcripts")
         
+    except ValueError as e:
+        print(f"❌ {str(e)}")
+        print("💡 Please resolve the naming conflict - multiple files have the same ID")
+        print("💡 Use 'rec --list' to see all transcripts and their filenames")
     except Exception as e:
         print(f"❌ Error showing transcript: {e}")
 
@@ -1073,7 +1077,14 @@ def append_to_transcript(id_reference):
         file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
         
         # Check if transcript exists
-        existing_path = file_manager.find_transcript(id_reference)
+        try:
+            existing_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            print("💡 Please resolve the naming conflict - multiple files have the same ID")
+            print("💡 Use 'rec --list' to see all transcripts and their filenames")
+            return
+            
         if not existing_path:
             print(f"❌ Transcript with ID '{id_reference}' not found.")
             print("💡 Use 'rec --list' to see available transcripts")
@@ -1139,7 +1150,14 @@ def summarize_file(path_or_id):
         if path_or_id.startswith('-') or path_or_id.isdigit():
             # It's a transcript ID reference
             file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-            file_path = file_manager.find_transcript(path_or_id)
+            
+            try:
+                file_path = file_manager.find_transcript(path_or_id)
+            except ValueError as e:
+                print(f"❌ {str(e)}")
+                print("💡 Please resolve the naming conflict - multiple files have the same ID")
+                print("💡 Use 'rec --list' to see all transcripts and their filenames")
+                return
             
             if not file_path:
                 print(f"❌ Transcript with ID '{path_or_id}' not found.")
