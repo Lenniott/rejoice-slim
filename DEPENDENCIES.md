@@ -55,10 +55,11 @@ python-dotenv>=1.0.0
 
 ```python
 pyyaml>=6.0
-# YAML parsing for output file frontmatter
-# Why: Creates structured metadata in transcript files
+# YAML parsing for transcript file headers
+# Why: Creates structured frontmatter with ID, title, creation date
 # Privacy: Local file processing only
-# Alternative: JSON (but YAML is more human-readable)
+# Usage: Enables ID-based transcript system with metadata
+# Alternative: JSON (but YAML is more human-readable for frontmatter)
 ```
 
 ### 🌐 Local AI Integration (Optional)

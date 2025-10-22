@@ -94,14 +94,18 @@ The setup offers two installation modes:
 After setup completes:
 
 ```bash
-# Start transcribing (if alias was created)
+# Start transcribing (creates 000001.md, 000002.md, etc.)
 rec
 
-# Or run directly
-python src/transcribe.py
+# List all transcripts with their IDs
+rec --list
+
+# View or append to existing transcript
+rec --show 000001
+rec -000001
 
 # Configure settings
-python src/transcribe.py --config
+python src/transcribe.py --settings
 ```
 
 The setup script creates an alias for easy access. If it doesn't work, restart your terminal or run:

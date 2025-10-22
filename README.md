@@ -7,8 +7,9 @@ Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for
 ## ✨ What It Does
 
 - 🎤 **One-command recording** - Start transcribing with `rec`
-- 🤖 **AI-powered naming** - Automatically generates descriptive filenames (optional)
-- 📝 **Obsidian-ready** - Markdown format with tags and metadata
+- 🆔 **Smart ID system** - Easy-to-reference transcripts with descriptive names
+- ➕ **Append to transcripts** - Add to existing recordings with `rec -000001`
+- 📝 **Obsidian-ready** - Markdown format with YAML frontmatter
 - 🔄 **Real-time transcription** - See your words appear as you speak
 - 🎯 **Smart auto-stop** - Automatically stops when no speech detected
 - 🏠 **100% local** - Your voice data never leaves your computer
@@ -36,8 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/benjamayden/rejoice-slim/main/setup
 
 ### Basic Usage  
 ```bash
-rec                              # Start recording and transcribing
-python src/transcribe.py --config  # Configure settings
+rec                              # Start recording (creates smart_filename_22102025_000001.md, etc.)
+rec -000001                      # Append to existing transcript by ID
+rec --list                       # Show all transcripts with their IDs
+python src/transcribe.py --settings  # Configure settings
 ```
 
 ---

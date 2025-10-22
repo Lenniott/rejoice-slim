@@ -1,4 +1,4 @@
 {
-  "md_template": "---\ncreated: {created_date} {created_time}\nstatus: raw\ntags:{tags_section}\n---\n\n## 📝 Summary\n\n> {summary}\n\n---\n\n## 🎙️ Transcription\n\n> {transcription}\n\n---\n\n",
+  "md_template": "---\ncreated: {created_date} {created_time}\nstatus: raw\ntags:{tags_section}\n---\n\n## 📝 Summary\n\n> {summary}\n\n---\n\n## 🎙️ Transcription\n\n {transcription}\n\n---\n\n",
   "txt_template": "Created: {created_date} {created_time}\nStatus: raw\nTags: {tags_inline}\n\nSummary:\n{summary}\n\nTranscription:\n{transcription}\n"
 }

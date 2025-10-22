@@ -42,3 +42,9 @@ pyperclip>=1.8.2
 # - Auto-copy transcripts to clipboard (optional)
 # - Works offline, no network access
 # - Pure system integration
+
+# File Format Support
+PyYAML>=6.0
+# - Parses and generates YAML front matter
+# - Used for transcript file headers
+# - No network access, pure file operations

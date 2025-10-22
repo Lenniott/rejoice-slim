@@ -33,6 +33,11 @@ from audio_chunker import AudioChunker
 from transcription_worker import TranscriptionWorkerPool
 from vad_service import VADService
 
+# Import our new ID-based transcript management
+from transcript_manager import TranscriptFileManager
+from id_generator import TranscriptIDGenerator
+from file_header import TranscriptHeader
+
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 SAVE_PATH = os.getenv("SAVE_PATH")
@@ -957,6 +962,132 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
                 opener = "open" if sys.platform == "darwin" else "xdg-open"
                 subprocess.run([opener, full_path])
 
+def list_transcripts():
+    """List all available transcripts with their IDs."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        transcripts = file_manager.list_transcripts()
+        
+        # Also check for legacy format files (only in SAVE_PATH)
+        legacy_files = []
+        if os.path.exists(SAVE_PATH):
+            for filename in os.listdir(SAVE_PATH):
+                if (filename.endswith(('.md', '.txt')) and 
+                    TranscriptHeader.is_legacy_format_file(filename) and
+                    not TranscriptHeader.is_id_format_file(filename)):
+                    file_path = os.path.join(SAVE_PATH, filename)
+                    try:
+                        stat = os.stat(file_path)
+                        mod_time = datetime.fromtimestamp(stat.st_mtime)
+                        legacy_files.append((filename, mod_time))
+                    except OSError:
+                        continue
+        
+        # Sort legacy files by modification time (newest first)
+        legacy_files.sort(key=lambda x: x[1], reverse=True)
+        
+        if not transcripts and not legacy_files:
+            print("📝 No transcripts found.")
+            return
+        
+        print("\n📋 Available Transcripts:")
+        print("─" * 60)
+        
+        # Show new ID-format transcripts first
+        if transcripts:
+            print("🆔 New Format (ID-based):")
+            for transcript_id, filename, creation_date in transcripts:
+                date_str = creation_date.strftime("%Y-%m-%d %H:%M")
+                print(f"   {filename} (ID: {transcript_id}, {date_str})")
+            print()
+        
+        # Show legacy format transcripts
+        if legacy_files:
+            print("� Legacy Format (timestamp-based):")
+            for filename, mod_time in legacy_files:
+                date_str = mod_time.strftime("%Y-%m-%d %H:%M")
+                print(f"   {filename} ({date_str})")
+            print()
+        
+        if transcripts:
+            print(f"💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
+        print(f"💡 New transcripts use format: descriptive-name_DDMMYYYY_000001.{OUTPUT_FORMAT}")
+        
+    except Exception as e:
+        print(f"❌ Error listing transcripts: {e}")
+
+def show_transcript(id_reference):
+    """Show the content of a transcript by ID."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        content = file_manager.get_transcript_content(id_reference)
+        
+        if content:
+            print(f"\n📄 Transcript {id_reference}:")
+            print("─" * 50)
+            print(content)
+        else:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+        
+    except Exception as e:
+        print(f"❌ Error showing transcript: {e}")
+
+def append_to_transcript(id_reference):
+    """Record new audio and append to existing transcript."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript exists
+        existing_path = file_manager.find_transcript(id_reference)
+        if not existing_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+            return
+        
+        clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+        print(f"🔗 Appending to transcript {clean_id}")
+        
+        # Show existing content preview
+        existing_content = file_manager.get_transcript_content(id_reference)
+        if existing_content:
+            preview = existing_content[:200] + "..." if len(existing_content) > 200 else existing_content
+            print(f"📄 Current content preview: {preview}")
+        
+        print("\n--- Recording additional content ---")
+        
+        # Record new audio
+        new_transcript = record_audio_chunked()
+        if not new_transcript:
+            print("❌ No new content recorded.")
+            return
+        
+        # Deduplicate the new content
+        new_transcript = deduplicate_transcript(new_transcript)
+        
+        print("\n--- NEW CONTENT ---")
+        print(new_transcript)
+        print("--------------------")
+        
+        # Append to existing transcript
+        updated_path = file_manager.append_to_transcript(id_reference, new_transcript)
+        
+        if updated_path:
+            print(f"✅ Successfully appended to transcript {clean_id}")
+            print(f"📁 Updated file: {updated_path}")
+            
+            # Copy combined content to clipboard if enabled
+            if AUTO_COPY:
+                combined_content = file_manager.get_transcript_content(id_reference)
+                if combined_content:
+                    pyperclip.copy(combined_content)
+                    print("📋 Combined transcript copied to clipboard.")
+        else:
+            print(f"❌ Failed to append to transcript {clean_id}")
+        
+    except Exception as e:
+        print(f"❌ Error appending to transcript: {e}")
+
 def main(args=None):
     try:
         # Set defaults if no args provided
@@ -991,87 +1122,41 @@ def main(args=None):
         pyperclip.copy(transcribed_text)
         print("📋 Transcription copied to clipboard.")
 
-    # 4. Save file immediately with timestamp name
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    unique_id = str(uuid.uuid4())[:6]
-    temp_filename = f"{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
-    temp_path = os.path.join(SAVE_PATH, temp_filename)
+    # 4. Generate filename and save transcript
+    file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
     
-    # Create basic content
-    templates = load_templates()
-    now = datetime.now()
-    created_date = now.strftime("%Y-%m-%d")
-    created_time = now.strftime("%H:%M")
-    
-    template_key = f"{OUTPUT_FORMAT}_template"
-    if template_key in templates:
-        content = templates[template_key].format(
-            created_date=created_date,
-            created_time=created_time,
-            summary="[Summary will be generated if requested]",
-            transcription=transcribed_text,
-            tags_section="\n  - voice-note",
-            tags_inline="voice-note"
-        )
-    else:
-        # Fallback to simple format
-        content = f"# Transcription: {now.strftime('%d %B %Y, %H:%M')}\n\n{transcribed_text}"
-    
-    # Save immediately
-    with open(temp_path, "w") as f:
-        f.write(content)
-    print(f"✅ Successfully saved transcript to: {temp_path}")
-
-    # 4. Generate metadata and rename file (if Ollama available)
+    # Try to get AI-generated filename if Ollama is available
+    generated_filename = "transcript"  # default
     ollama_available = check_ollama_available()
-    final_path = temp_path  # Default to temp path
     
-    if ollama_available:
+    if ollama_available and AUTO_METADATA:
         metadata = get_combined_metadata_from_llm(transcribed_text)
-        
-        if metadata:
-            # Create final filename with unique ID preserved
-            final_filename = f"{metadata['filename']}_{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
-            final_path = os.path.join(SAVE_PATH, final_filename)
-            
-            # Rename file
-            os.rename(temp_path, final_path)
-            
-            # Update file with metadata
-            try:
-                with open(final_path, "r") as f:
-                    current_content = f.read()
-                
-                # Replace summary
-                updated_content = current_content.replace(
-                    "[Summary will be generated if requested]", 
-                    metadata['summary']
-                )
-                
-                # Add tags
-                if metadata['tags']:
-                    tags_to_add = "\n".join([f"  - {tag}" for tag in metadata['tags']])
-                    updated_content = updated_content.replace(
-                        "tags:\n  - voice-note",
-                        f"tags:\n  - voice-note\n{tags_to_add}"
-                    )
-                
-                with open(final_path, "w") as f:
-                    f.write(updated_content)
-                
-                print(f"📝 Summary: {metadata['summary']}")
-                if metadata['tags']:
-                    print(f"🏷️  Tags: {', '.join(metadata['tags'])}")
-                print(f"✅ File renamed to: {final_path}")
-                
-            except Exception as e:
-                print(f"⚠️ Error updating file with metadata: {e}")
-        else:
-            print("⚠️ Could not generate metadata, keeping original filename")
-    else:
-        print("ℹ️  Ollama not available - keeping timestamp filename")
+        if metadata and metadata.get('filename'):
+            generated_filename = metadata['filename']
+    
+    try:
+        file_path, transcript_id = file_manager.create_new_transcript(
+            transcribed_text, 
+            generated_filename
+        )
+        print(f"✅ Successfully saved transcript to: {file_path}")
+        print(f"🆔 Transcript ID: {transcript_id}")
+    except Exception as e:
+        print(f"❌ Error saving transcript: {e}")
+        return
 
-    # 5. Handle post-transcription actions
+    # 5. Show additional metadata summary if available
+    final_path = file_path  # Use the ID-based file path
+    
+    if ollama_available and AUTO_METADATA and metadata and metadata.get('summary'):
+        print(f"📝 Summary: {metadata['summary']}")
+        if metadata.get('tags'):
+            print(f"🏷️  Tags: {', '.join(metadata['tags'])}")
+    elif not ollama_available:
+        print("ℹ️  Ollama not available - using default filename")
+    # If AUTO_METADATA is False, we silently skip metadata generation
+
+    # 6. Handle post-transcription actions
     handle_post_transcription_actions(transcribed_text, final_path, ollama_available, args)
 
 if __name__ == "__main__":
@@ -1093,6 +1178,12 @@ if __name__ == "__main__":
                        help='Do not generate AI summary and tags')
     parser.add_argument('--device', type=int, 
                        help='Override default mic device for this recording')
+    parser.add_argument('id_reference', nargs='?', 
+                       help='Reference existing transcript by ID (e.g., -123456)')
+    parser.add_argument('--list', action='store_true',
+                       help='List all transcripts with their IDs')
+    parser.add_argument('--show', type=str, metavar='ID',
+                       help='Show content of transcript by ID')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1104,6 +1195,12 @@ if __name__ == "__main__":
             print("❌ Configuration is missing. Please run the setup.sh script first.")
         elif args.settings:
             settings_menu()
+        elif args.list:
+            list_transcripts()
+        elif args.show:
+            show_transcript(args.show)
+        elif args.id_reference:
+            append_to_transcript(args.id_reference)
         else:
             main(args)
     except KeyboardInterrupt:
