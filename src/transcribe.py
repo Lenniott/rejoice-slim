@@ -48,6 +48,7 @@ OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "md")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:270m")
+OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))  # Character limit for AI processing
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
@@ -293,6 +294,9 @@ def update_env_setting(key, value):
     # Write back to file
     with open(env_path, 'w') as f:
         f.writelines(lines)
+    
+    # Also update the current process environment
+    os.environ[key] = value
 
 def settings_menu():
     """Interactive settings menu with categories"""
@@ -459,21 +463,29 @@ def output_settings():
 def ai_settings():
     """AI settings submenu"""
     while True:
-        timeout_minutes = OLLAMA_TIMEOUT // 60
-        timeout_seconds = OLLAMA_TIMEOUT % 60
+        # Read current values dynamically from environment
+        current_model = os.getenv('OLLAMA_MODEL', 'gemma3:270m')
+        current_metadata = os.getenv('AUTO_METADATA', 'false').lower() == 'true'
+        current_timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
+        current_max_length = int(os.getenv('OLLAMA_MAX_CONTENT_LENGTH', '32000'))
+        
+        timeout_minutes = current_timeout // 60
+        timeout_seconds = current_timeout % 60
         timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
         
         print(f"\n🤖 AI Settings")
         print("─" * 15)
-        print(f"Current Ollama Model: {OLLAMA_MODEL}")
-        print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"Current Ollama Model: {current_model}")
+        print(f"Auto Metadata: {'Yes' if current_metadata else 'No'}")
         print(f"Ollama Timeout: {timeout_str}")
+        print(f"Max Content Length: {current_max_length:,} characters")
         print(f"\n1. Change Ollama Model")
         print(f"2. Toggle Auto Metadata")
         print(f"3. Change Ollama Timeout")
-        print(f"4. ← Back to Main Menu")
+        print(f"4. Change Max Content Length")
+        print(f"5. ← Back to Main Menu")
         
-        choice = input("\n👉 Choose option (1-4): ").strip()
+        choice = input("\n👉 Choose option (1-5): ").strip()
         
         if choice == "1":
             print("\nSuggested Ollama Models:")
@@ -497,7 +509,6 @@ def ai_settings():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "3":
-            current_timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
             print(f"\nCurrent timeout: {current_timeout} seconds")
             print("Recommended timeouts:")
             print("  • 60s  - Fast models (gemma3:270m, qwen3:0.6b)")
@@ -520,6 +531,26 @@ def ai_settings():
                 print("❌ Please enter a valid number")
         
         elif choice == "4":
+            print(f"\nCurrent max content length: {current_max_length:,} characters")
+            print("Recommended character limits:")
+            print("  • 8,000   - Conservative (original default)")
+            print("  • 32,000  - Balanced (new default)")
+            print("  • 64,000  - For powerful setups")
+            print("  • 128,000 - Maximum (requires robust hardware)")
+            
+            new_length = input(f"Enter max content length (1000-200000) [current: {current_max_length:,}]: ").strip()
+            try:
+                length = int(new_length.replace(',', '')) if new_length else current_max_length
+                if 1000 <= length <= 200000:
+                    update_env_setting("OLLAMA_MAX_CONTENT_LENGTH", str(length))
+                    print(f"✅ Max content length changed to: {length:,} characters")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Length must be between 1,000 and 200,000 characters")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "5":
             break
         else:
             print("❌ Invalid choice. Please select 1-4.")
@@ -1098,7 +1129,8 @@ def summarize_file(path_or_id):
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
             ollama_timeout=OLLAMA_TIMEOUT,
-            notes_folder=SAVE_PATH  # Use same folder as transcripts for processed files
+            notes_folder=SAVE_PATH,  # Use same folder as transcripts for processed files
+            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
         )
         
         # Determine if input is a file path or transcript ID
@@ -1219,7 +1251,11 @@ def main(args=None):
     
     if ollama_available and AUTO_METADATA:
         print("🤖 Generating summary and tags...")
-        summarizer = SummarizationService(OLLAMA_MODEL)
+        summarizer = SummarizationService(
+            ollama_model=OLLAMA_MODEL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+        )
         success = summarizer.summarize_file(file_path, copy_to_notes=False)
         if success:
             print("✅ Summary and tags added to transcript metadata")

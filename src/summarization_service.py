@@ -21,7 +21,8 @@ class SummarizationService:
                  ollama_model: str,
                  ollama_api_url: str = "http://localhost:11434/api/generate",
                  ollama_timeout: int = 180,
-                 notes_folder: Optional[str] = None):
+                 notes_folder: Optional[str] = None,
+                 max_content_length: int = 32000):
         """
         Initialize the summarization service.
         
@@ -30,11 +31,13 @@ class SummarizationService:
             ollama_api_url: Ollama API endpoint
             ollama_timeout: Timeout in seconds for Ollama requests
             notes_folder: Optional folder to copy processed files to
+            max_content_length: Maximum characters to send to AI (default: 32000)
         """
         self.ollama_model = ollama_model
         self.ollama_api_url = ollama_api_url
         self.ollama_timeout = ollama_timeout
         self.notes_folder = notes_folder
+        self.max_content_length = max_content_length
         
         # Load prompts for metadata generation
         self.prompts = self._load_prompts()
@@ -74,10 +77,11 @@ class SummarizationService:
                     "model": self.ollama_model,
                     "prompt": prompt,
                     "stream": False,
+                    "format": "json",
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
-                        "max_tokens": 200
+                        "num_predict": 400
                     }
                 }
                 
@@ -86,23 +90,39 @@ class SummarizationService:
                 response.raise_for_status()
                 
                 # Get response and clean it up
-                raw_response = json.loads(response.text)["response"].strip()
+                response_data = json.loads(response.text)
+                raw_response = response_data.get("response", "").strip()
                 
-                # Remove thinking tags and extract JSON
-                cleaned = self._clean_ollama_response(raw_response)
-                return cleaned if cleaned else None
+                if not raw_response:
+                    print(f"   ⚠️ Empty response from Ollama (attempt {attempt + 1})")
+                    continue
+                
+                # With structured outputs, response should already be valid JSON
+                if raw_response.strip():
+                    print(f"   📋 Structured response received: {len(raw_response)} chars")
+                    return raw_response.strip()
+                else:
+                    print(f"   ⚠️ Empty structured response from Ollama (attempt {attempt + 1})")
+                    continue
                 
             except requests.exceptions.Timeout:
                 timeout_minutes = self.ollama_timeout // 60
                 timeout_seconds = self.ollama_timeout % 60
                 time_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
                 print(f"⚠️ Ollama request timed out after {time_str} (attempt {attempt + 1})")
+                print(f"   📊 Prompt length: {len(prompt)} characters")
                 
             except requests.exceptions.ConnectionError:
                 print(f"⚠️ Could not connect to Ollama (attempt {attempt + 1})")
+                print(f"   🔌 API URL: {self.ollama_api_url}")
+                print(f"   🤖 Model: {self.ollama_model}")
                 
             except Exception as e:
                 print(f"⚠️ Ollama error (attempt {attempt + 1}): {e}")
+                print(f"   🔍 Exception type: {type(e).__name__}")
+                if hasattr(e, 'response') and e.response:
+                    print(f"   📤 HTTP Status: {e.response.status_code}")
+                    print(f"   📋 Response: {e.response.text[:200]}...")
             
             if attempt < max_retries - 1:
                 print("   Retrying in 2 seconds...")
@@ -116,8 +136,89 @@ class SummarizationService:
         print("   - Restart Ollama: ollama serve")
         return None
     
+    def _sanitize_json_string(self, text: str) -> str:
+        """Sanitize text for safe JSON string usage."""
+        # Replace problematic characters that break JSON
+        text = text.replace('\\', '\\\\')  # Escape backslashes first
+        text = text.replace('"', '\\"')    # Escape quotes
+        text = text.replace('\n', ' ')     # Replace newlines with spaces
+        text = text.replace('\r', ' ')     # Replace carriage returns
+        text = text.replace('\t', ' ')     # Replace tabs
+        # Remove multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+
+    def _repair_json(self, json_str: str) -> Optional[str]:
+        """Attempt to repair common JSON syntax issues."""
+        try:
+            # First try parsing as-is
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError as e:
+            print(f"   🔧 Attempting JSON repair for error: {e}")
+            
+            # Start with original
+            repaired = json_str
+            
+            # More aggressive quote fixing - handle unescaped quotes in string values
+            # Pattern: "field": "text with "embedded quotes" here"
+            def fix_field_quotes(field_name):
+                # Find the field and extract its value, fixing embedded quotes
+                pattern = rf'"{field_name}":\s*"(.*?)"(?=\s*[,}}])'
+                
+                def quote_fixer(match):
+                    value = match.group(1)
+                    # Count quotes to see if we have unbalanced ones
+                    quote_count = value.count('"')
+                    if quote_count > 0:
+                        # Replace all internal quotes with escaped quotes or remove them
+                        # Try escaping first
+                        fixed_value = value.replace('"', '\\"')
+                        return f'"{field_name}": "{fixed_value}"'
+                    return match.group(0)
+                
+                return re.sub(pattern, quote_fixer, repaired, flags=re.DOTALL)
+            
+            # Apply to all known string fields
+            for field in ['filename', 'summary']:
+                repaired = fix_field_quotes(field)
+            
+            # If that doesn't work, try more aggressive cleaning
+            if repaired == json_str:
+                # Remove all internal quotes from string values
+                def aggressive_quote_removal(match):
+                    field = match.group(1)
+                    value = match.group(2)
+                    # Remove all quotes and problematic characters
+                    cleaned_value = value.replace('"', '').replace('\n', ' ').replace('\r', ' ')
+                    cleaned_value = re.sub(r'\s+', ' ', cleaned_value).strip()
+                    return f'"{field}": "{cleaned_value}"'
+                
+                # Apply to string fields
+                repaired = re.sub(r'"(filename|summary)":\s*"([^"]*(?:"[^"]*)*)"', aggressive_quote_removal, repaired)
+            
+            # Fix trailing commas
+            repaired = re.sub(r',\s*}', '}', repaired)
+            repaired = re.sub(r',\s*]', ']', repaired)
+            
+            # Fix newlines in strings
+            repaired = re.sub(r'"([^"]*)\n([^"]*)"', r'"\1 \2"', repaired)
+            
+            # Try parsing the repaired version
+            try:
+                json.loads(repaired)
+                print(f"   ✅ JSON repair successful")
+                return repaired
+            except json.JSONDecodeError as repair_error:
+                print(f"   ❌ JSON repair failed: {repair_error}")
+                print(f"   🔧 Repaired JSON was: {repaired[:200]}...")
+                return None
+
     def _clean_ollama_response(self, raw_response: str) -> Optional[str]:
         """Clean up Ollama response and extract JSON."""
+        print(f"   🔍 Raw response length: {len(raw_response)} characters")
+        print(f"   📋 Raw response preview: {raw_response[:300]}{'...' if len(raw_response) > 300 else ''}")
+        
         # Remove various thinking patterns
         cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
         cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
@@ -132,9 +233,11 @@ class SummarizationService:
             r'\{.*\}',  # Any JSON-like structure (last resort)
         ]
         
-        for pattern in json_patterns:
+        for i, pattern in enumerate(json_patterns):
             matches = re.findall(pattern, cleaned, re.DOTALL | re.IGNORECASE)
             if matches:
+                print(f"   ✅ JSON pattern {i+1} matched: {len(matches)} match(es)")
+                print(f"   📄 First match preview: {str(matches[0])[:100]}...")
                 # Take the first match and clean it up
                 json_candidate = matches[0]
                 if isinstance(json_candidate, tuple):
@@ -143,14 +246,21 @@ class SummarizationService:
                 # Clean up the JSON
                 json_candidate = json_candidate.strip()
                 if json_candidate:
+                    # Try to repair common JSON issues
+                    repaired = self._repair_json(json_candidate)
+                    if repaired:
+                        return repaired
                     return json_candidate
         
-        print(f"⚠️ Could not find valid JSON in response: {raw_response[:200]}...")
+        print(f"⚠️ Could not extract valid JSON from response")
+        if raw_response:
+            print(f"   Response preview: {raw_response[:100]}{'...' if len(raw_response) > 100 else ''}")
         return None
     
     def get_metadata(self, text_content: str) -> Optional[Dict[str, Any]]:
         """
         Get AI-generated metadata (filename, summary, tags) for text content.
+        Uses hierarchical summarization for large content.
         
         Args:
             text_content: Text to analyze
@@ -162,29 +272,149 @@ class SummarizationService:
             print("❌ Ollama not available - skipping AI metadata generation")
             return None
         
+        # Use hierarchical summarization for large content
+        if len(text_content) > 3000:
+            print(f"📚 Large content detected ({len(text_content)} chars), using hierarchical summarization")
+            return self._hierarchical_summarize(text_content)
+        
+        # Use single-step for smaller content
         if "combined_metadata" not in self.prompts:
             print("❌ Combined metadata prompt not found in prompts.json")
             return None
         
-        prompt_template = self.prompts["combined_metadata"]["prompt"]
+        # Handle very large content by truncating if necessary
+        max_content_length = int(os.getenv('OLLAMA_MAX_CONTENT_LENGTH', '15000'))
+        if len(text_content) > max_content_length:
+            print(f"   ⚠️ Content too large ({len(text_content)} chars), truncating to {max_content_length}")
+            # Take first 80% and last 20% to preserve more beginning context where topics are mentioned
+            split_point = int(max_content_length * 0.8)
+            remaining = max_content_length - split_point
+            truncated_content = text_content[:split_point] + "\n\n[... content truncated ...]\n\n" + text_content[-remaining:]
+            text_content = truncated_content
+            print(f"   📝 Using truncated content: {len(text_content)} chars")
         
-        # Add explicit JSON formatting instruction
-        enhanced_prompt = prompt_template + "\n\nIMPORTANT: Return ONLY valid JSON. No explanations, no additional text, just the JSON object."
-        prompt = enhanced_prompt.format(text=text_content)
+        prompt_template = self.prompts["combined_metadata"]["prompt"]
+        prompt = prompt_template.format(text=text_content)
         
         result = self._call_ollama(prompt)
         if not result:
             return None
         
+        # If we get a result, try to parse it first
+        parsed_result = self._try_parse_metadata(result)
+        if parsed_result:
+            return parsed_result
+        
+        # If parsing failed, try a simpler fallback prompt with better content sampling
+        print("   🔄 Trying simplified fallback prompt...")
+        
+        # Take a better sample: beginning + middle + end
+        content_len = len(text_content)
+        if content_len > 2000:
+            sample = text_content[:600] + "\n[...middle content...]\n" + text_content[content_len//2:content_len//2+400] + "\n[...end content...]\n" + text_content[-600:]
+        else:
+            sample = text_content
+            
+        fallback_prompt = f"""Analyze this content and respond ONLY with valid JSON. No extra text.
+
+Content sample:
+{sample}
+
+Required format:
+{{"filename": "descriptive-topic-name", "summary": "Brief 2-3 sentence description", "tags": ["keyword1", "keyword2", "keyword3"]}}
+
+JSON:"""
+        
+        fallback_result = self._call_ollama(fallback_prompt)
+        if fallback_result:
+            return self._try_parse_metadata(fallback_result)
+        
+        return None
+
+    def _hierarchical_summarize(self, text_content: str) -> Optional[Dict[str, Any]]:
+        """
+        Hierarchical summarization: chunk -> summarize each -> meta-summarize.
+        Focuses on questions, actions, and narrative threads.
+        """
+        if "chunk_summary" not in self.prompts or "meta_summary" not in self.prompts:
+            print("❌ Hierarchical summarization prompts not found")
+            return None
+        
+        # Step 1: Break into chunks (overlap for context preservation)
+        chunk_size = 2000  # Smaller chunks for better processing
+        overlap = 200      # Overlap to preserve context
+        chunks = []
+        
+        for i in range(0, len(text_content), chunk_size - overlap):
+            chunk = text_content[i:i + chunk_size]
+            if chunk.strip():
+                chunks.append(chunk)
+        
+        print(f"   📑 Processing {len(chunks)} chunks of ~{chunk_size} characters each")
+        
+        # Step 2: Summarize each chunk
+        chunk_summaries = []
+        chunk_prompt_template = self.prompts["chunk_summary"]["prompt"]
+        
+        for i, chunk in enumerate(chunks):
+            print(f"   🔍 Processing chunk {i+1}/{len(chunks)}")
+            chunk_prompt = chunk_prompt_template.format(text=chunk)
+            
+            chunk_result = self._call_ollama(chunk_prompt)
+            if chunk_result:
+                # Clean the result and extract just the summary text
+                summary = chunk_result.strip()
+                # Remove any JSON formatting that might have crept in
+                summary = re.sub(r'^[{\'"]*', '', summary)
+                summary = re.sub(r'[}\'"]*$', '', summary) 
+                chunk_summaries.append(f"Chunk {i+1}: {summary}")
+            else:
+                print(f"   ⚠️ Failed to summarize chunk {i+1}")
+        
+        if not chunk_summaries:
+            print("❌ No chunks were successfully summarized")
+            return None
+        
+        print(f"   ✅ Generated {len(chunk_summaries)} chunk summaries")
+        
+        # Step 3: Create meta-summary from chunk summaries
+        combined_summaries = "\n".join(chunk_summaries)
+        meta_prompt_template = self.prompts["meta_summary"]["prompt"]
+        meta_prompt = meta_prompt_template.format(text=combined_summaries)
+        
+        print("   🎯 Creating meta-summary from chunks")
+        meta_result = self._call_ollama(meta_prompt)
+        if not meta_result:
+            print("❌ Failed to create meta-summary")
+            return None
+        
+        # Step 4: Parse the final result
+        return self._try_parse_metadata(meta_result)
+
+    def _try_parse_metadata(self, result: str) -> Optional[Dict[str, Any]]:
+        
         try:
             # Parse JSON response
             metadata = json.loads(result)
             
-            # Validate required fields
-            if all(key in metadata for key in ['filename', 'summary', 'tags']):
+            # Enhanced validation with detailed logging
+            required_fields = ['filename', 'summary', 'tags']
+            received_fields = list(metadata.keys())
+            
+            print(f"   🔍 Expected fields: {required_fields}")
+            print(f"   📥 Received fields: {received_fields}")
+            
+            if all(key in metadata for key in required_fields):
                 # Clean up filename
                 filename = metadata['filename'].strip()
                 if not filename:
+                    print("❌ Empty filename after cleaning")
+                    return None
+                
+                # Validate and clean up summary
+                summary = metadata['summary'].strip()
+                if not summary:
+                    print("❌ Empty summary after cleaning")
                     return None
                 
                 # Clean up tags
@@ -193,17 +423,33 @@ class SummarizationService:
                     tags = [tag.strip().lower().replace(' ', '-') for tag in tags if tag.strip()]
                     tags = tags[:5]  # Limit to 5 tags max
                 else:
+                    print(f"⚠️ Tags field is not a list: {type(tags)}, converting to empty list")
                     tags = []
+                
+                print(f"✅ Successfully parsed and validated metadata:")
+                print(f"   📁 Filename: {filename}")
+                print(f"   📝 Summary: {summary[:100]}{'...' if len(summary) > 100 else ''}")
+                print(f"   🏷️ Tags: {', '.join(tags) if tags else 'None'}")
                 
                 return {
                     'filename': filename,
-                    'summary': metadata['summary'].strip(),
+                    'summary': summary,
                     'tags': tags
                 }
+            else:
+                missing_fields = [field for field in required_fields if field not in metadata]
+                unexpected_fields = [field for field in received_fields if field not in required_fields]
+                
+                print(f"❌ Schema validation failed!")
+                print(f"   Missing fields: {missing_fields}")
+                print(f"   Unexpected fields: {unexpected_fields}")
+                print(f"   Full response: {metadata}")
+                return None
                 
         except json.JSONDecodeError as e:
             print(f"❌ Error parsing AI response as JSON: {e}")
-            print(f"Raw response: {result[:200]}...")
+            print(f"   Content length: {len(result)} characters")
+            print(f"   Response preview: {result[:300]}{'...' if len(result) > 300 else ''}")
             return None
         
         return None
@@ -239,9 +485,9 @@ class SummarizationService:
             print(f"   Content length: {len(text_content)} characters")
             
             # Truncate very long content to avoid Ollama timeouts
-            if len(text_content) > 8000:
-                print(f"   ⚠️ Content is very long, using first 8000 characters for analysis")
-                text_content = text_content[:8000] + "..."
+            if len(text_content) > self.max_content_length:
+                print(f"   ⚠️ Content is very long, using first {self.max_content_length} characters for analysis")
+                text_content = text_content[:self.max_content_length] + "..."
             
             # Get AI metadata
             metadata = self.get_metadata(text_content)
@@ -254,7 +500,7 @@ class SummarizationService:
                 content, has_frontmatter, frontmatter_data, metadata, text_content
             )
             
-            # Determine output path
+            # Determine output path and handle renaming
             output_path = file_path
             
             # If no frontmatter existed and notes folder specified, copy to notes folder
@@ -275,7 +521,16 @@ class SummarizationService:
                 
                 print(f"📋 Creating new note: {new_filename}")
             else:
-                print(f"📝 Updating existing file: {os.path.basename(file_path)}")
+                # Check if this is a transcript file that can be renamed with AI-generated filename
+                if has_frontmatter and self._is_transcript_file(file_path, frontmatter_data):
+                    new_output_path = self._rename_transcript_with_ai_filename(file_path, metadata['filename'], frontmatter_data)
+                    if new_output_path and new_output_path != file_path:
+                        output_path = new_output_path
+                        print(f"📝 Renaming to: {os.path.basename(output_path)}")
+                    else:
+                        print(f"📝 Updating existing file: {os.path.basename(file_path)}")
+                else:
+                    print(f"📝 Updating existing file: {os.path.basename(file_path)}")
             
             # Write updated content
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -393,3 +648,74 @@ class SummarizationService:
             cleaned = cleaned[:50].strip('_')
         
         return cleaned
+    
+    def _is_transcript_file(self, file_path: str, frontmatter_data: Dict) -> bool:
+        """
+        Check if this is a transcript file that can be renamed.
+        
+        Args:
+            file_path: Path to the file
+            frontmatter_data: Parsed frontmatter data
+            
+        Returns:
+            bool: True if this is a renameable transcript file
+        """
+        # Check if it has transcript-like frontmatter (id field indicates transcript)
+        if 'id' in frontmatter_data:
+            return True
+            
+        # Check if filename matches transcript pattern: *_DDMMYYYY_ID.ext
+        filename = os.path.basename(file_path)
+        transcript_pattern = re.compile(r'^.*_\d{8}_\d+\.(md|txt)$')
+        return bool(transcript_pattern.match(filename))
+    
+    def _rename_transcript_with_ai_filename(self, file_path: str, ai_filename: str, frontmatter_data: Dict) -> Optional[str]:
+        """
+        Rename transcript file with AI-generated filename while preserving ID structure.
+        
+        Args:
+            file_path: Current file path
+            ai_filename: AI-generated filename
+            frontmatter_data: Parsed frontmatter data
+            
+        Returns:
+            str or None: New file path if renamed successfully, None otherwise
+        """
+        try:
+            directory = os.path.dirname(file_path)
+            current_filename = os.path.basename(file_path)
+            
+            # Extract ID and date from current filename
+            # Pattern: *_DDMMYYYY_ID.ext
+            pattern = re.compile(r'^.*_(\d{8})_(\d+)\.(.+)$')
+            match = pattern.match(current_filename)
+            
+            if not match:
+                # Try to get ID from frontmatter
+                if 'id' in frontmatter_data:
+                    # Use current date if no date pattern found
+                    date_str = datetime.now().strftime("%d%m%Y")
+                    file_id = str(frontmatter_data['id'])
+                    ext = os.path.splitext(file_path)[1][1:]  # Remove the dot
+                else:
+                    return None
+            else:
+                date_str = match.group(1)
+                file_id = match.group(2)  
+                ext = match.group(3)
+            
+            # Create new filename with AI-generated name
+            clean_ai_filename = self._clean_filename(ai_filename)
+            new_filename = f"{clean_ai_filename}_{date_str}_{file_id}.{ext}"
+            new_file_path = os.path.join(directory, new_filename)
+            
+            # Only rename if the new name is different
+            if new_file_path != file_path:
+                os.rename(file_path, new_file_path)
+                return new_file_path
+                
+            return file_path
+            
+        except Exception as e:
+            print(f"   ⚠️ Could not rename file: {e}")
+            return None
