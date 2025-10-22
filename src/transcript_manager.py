@@ -6,7 +6,7 @@ Handles creation, lookup, and management of transcript files.
 import os
 import re
 from datetime import datetime
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Callable
 from id_generator import TranscriptIDGenerator
 from file_header import TranscriptHeader
 
@@ -91,13 +91,17 @@ class TranscriptFileManager:
         return self.id_generator.find_transcript_by_id(clean_id)
     
     def append_to_transcript(self, id_reference: str, 
-                           additional_text: str) -> Optional[str]:
+                           additional_text: str,
+                           regenerate_metadata: bool = False,
+                           metadata_callback: Optional[Callable] = None) -> Optional[str]:
         """
         Append text to an existing transcript.
         
         Args:
             id_reference: ID reference to find transcript
             additional_text: Text to append
+            regenerate_metadata: Whether to regenerate AI metadata after appending
+            metadata_callback: Optional callback function to get new metadata
             
         Returns:
             str or None: Path to updated file, or None if not found
@@ -128,6 +132,38 @@ class TranscriptFileManager:
                     try:
                         creation_date = datetime.fromisoformat(header_data['created'])
                     except (ValueError, TypeError):
+                        pass
+                
+                # Regenerate metadata if requested and callback provided
+                if regenerate_metadata and metadata_callback:
+                    try:
+                        new_metadata = metadata_callback(combined_transcript)
+                        if new_metadata and new_metadata.get('filename'):
+                            # Update filename with new AI-generated name if different
+                            new_filename = new_metadata['filename']
+                            current_filename = os.path.basename(file_path)
+                            
+                            # Extract date and ID from current filename
+                            import re
+                            pattern = re.compile(r'^.*_(\d{8})_(\d+)\.(txt|md)$')
+                            match = pattern.match(current_filename)
+                            if match:
+                                date_str = match.group(1)
+                                file_id = match.group(2)
+                                ext = match.group(3)
+                                
+                                # Create new filename with updated name
+                                clean_filename = self._clean_filename(new_filename)
+                                new_filename_full = f"{clean_filename}_{date_str}_{file_id}.{ext}"
+                                new_file_path = os.path.join(self.save_path, new_filename_full)
+                                
+                                # Rename file if the name changed
+                                if new_filename_full != current_filename:
+                                    import os
+                                    os.rename(file_path, new_file_path)
+                                    file_path = new_file_path
+                    except Exception as e:
+                        # Don't fail the append if metadata regeneration fails
                         pass
                 
                 header = TranscriptHeader(transcript_id, creation_date)

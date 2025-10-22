@@ -38,6 +38,9 @@ from transcript_manager import TranscriptFileManager
 from id_generator import TranscriptIDGenerator
 from file_header import TranscriptHeader
 
+# Import summarization service
+from summarization_service import SummarizationService
+
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 SAVE_PATH = os.getenv("SAVE_PATH")
@@ -1088,6 +1091,72 @@ def append_to_transcript(id_reference):
     except Exception as e:
         print(f"❌ Error appending to transcript: {e}")
 
+def summarize_file(path_or_id):
+    """Summarize and tag a file by path or transcript ID."""
+    try:
+        # Initialize summarization service
+        summarizer = SummarizationService(
+            ollama_model=OLLAMA_MODEL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+            notes_folder=SAVE_PATH  # Use same folder as transcripts for processed files
+        )
+        
+        # Determine if input is a file path or transcript ID
+        file_path = None
+        
+        if path_or_id.startswith('-') or path_or_id.isdigit():
+            # It's a transcript ID reference
+            file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+            file_path = file_manager.find_transcript(path_or_id)
+            
+            if not file_path:
+                print(f"❌ Transcript with ID '{path_or_id}' not found.")
+                print("💡 Use 'rec --list' to see available transcripts")
+                return
+            
+            print(f"🔍 Found transcript: {os.path.basename(file_path)}")
+        else:
+            # It's a file path
+            file_path = os.path.abspath(path_or_id)
+            if not os.path.exists(file_path):
+                print(f"❌ File not found: {file_path}")
+                return
+            
+            # Check if it's a text file
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in ['.md', '.txt', '']:
+                print(f"⚠️ File type '{ext}' may not be supported. Continuing anyway...")
+        
+        print(f"🤖 Summarizing file: {os.path.basename(file_path)}")
+        
+        # Check if this is a transcript file (don't copy to notes folder)
+        is_transcript_file = file_path.startswith(SAVE_PATH)
+        
+        # Summarize the file
+        success = summarizer.summarize_file(file_path, copy_to_notes=not is_transcript_file)
+        
+        if success:
+            print("🎉 Summarization completed successfully!")
+            
+            # Copy to clipboard if enabled
+            if AUTO_COPY and is_transcript_file:
+                # For transcript files, copy the updated content
+                file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+                # Extract ID from filename to get updated content
+                import re
+                id_match = re.search(r'_(\d+)\.(md|txt)$', file_path)
+                if id_match:
+                    transcript_id = id_match.group(1)
+                    updated_content = file_manager.get_transcript_content(transcript_id)
+                    if updated_content:
+                        pyperclip.copy(updated_content)
+                        print("📋 Updated transcript copied to clipboard.")
+        else:
+            print("❌ Summarization failed.")
+        
+    except Exception as e:
+        print(f"❌ Error during summarization: {e}")
+
 def main(args=None):
     try:
         # Set defaults if no args provided
@@ -1184,6 +1253,8 @@ if __name__ == "__main__":
                        help='List all transcripts with their IDs')
     parser.add_argument('--show', type=str, metavar='ID',
                        help='Show content of transcript by ID')
+    parser.add_argument('--summarize', '--sum', type=str, metavar='PATH_OR_ID',
+                       help='Summarize and tag a file by path or transcript ID (e.g., /path/to/file.md or -123)')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1199,6 +1270,8 @@ if __name__ == "__main__":
             list_transcripts()
         elif args.show:
             show_transcript(args.show)
+        elif args.summarize:
+            summarize_file(args.summarize)
         elif args.id_reference:
             append_to_transcript(args.id_reference)
         else:
