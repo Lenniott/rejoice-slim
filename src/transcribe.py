@@ -1288,12 +1288,12 @@ if __name__ == "__main__":
                        help='Override default mic device for this recording')
     parser.add_argument('id_reference', nargs='?', 
                        help='Reference existing transcript by ID (e.g., -123456)')
-    parser.add_argument('--list', action='store_true',
+    parser.add_argument('-l', '--list', action='store_true',
                        help='List all transcripts with their IDs')
-    parser.add_argument('--show', type=str, metavar='ID',
+    parser.add_argument('-v', '--view', type=str, metavar='ID', dest='show',
                        help='Show content of transcript by ID')
-    parser.add_argument('--summarize', '--sum', type=str, metavar='PATH_OR_ID',
-                       help='Summarize and tag a file by path or transcript ID (e.g., /path/to/file.md or -123)')
+    parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
+                       help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)

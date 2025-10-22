@@ -50,7 +50,7 @@ You need these installed first:
 
 ### 3. Ollama (Optional)
 **Download:** [ollama.com/download](https://ollama.com/download)
-- **Required for:** AI features (smart filenames, summaries, tags)
+- **Required for:** Advanced AI features (intelligent analysis, hierarchical summarization, theme extraction)
 - **Test installation:** `ollama run gemma3:4b`
 - **Without Ollama:** Basic transcription works perfectly, just with timestamp-based filenames
 

@@ -42,10 +42,34 @@ After installation, you get these commands:
 ### `rec` - Start Recording
 ```bash
 rec                    # Basic recording with all features
-rec --list            # List all transcripts (both new and legacy)
-rec --show 000042     # View transcript content by ID
+rec -l / --list       # List all transcripts (both new and legacy)
+rec -v 000042         # View transcript content by ID  
+rec --view 000042     # Same as above (long form)
+rec -g 000042         # AI analysis: themes, questions, actions
+rec --genai 000042    # Same as above (long form) 
+rec -s / --settings   # Configure settings interactively
 rec -000042           # Reference/append to existing transcript
-rec --settings        # Configure settings interactively
+```
+
+### 🤖 AI Analysis Features
+```bash
+# Analyze transcripts or any text file
+rec -g 000042                    # Analyze transcript by ID
+rec -g /path/to/file.md         # Analyze any text file
+rec --genai /path/to/notes.txt  # Long form command
+
+# AI extracts:
+# - Main themes and narrative threads
+# - Key questions asked during conversation  
+# - Action items and decisions made
+# - Intelligent filename suggestions
+# - Relevant tags for categorization
+
+# Uses hierarchical processing for large files:
+# - Breaks content into ~2000 character chunks
+# - Summarizes each chunk focusing on themes/questions/actions
+# - Creates meta-summary from all chunks
+# - Handles files up to 30k+ characters efficiently
 ```
 
 ### New ID-Based System
@@ -129,9 +153,20 @@ Older transcripts may have the previous format with tags, summaries, and AI meta
 ### Command Line Options
 ```bash
 python src/transcribe.py --help                    # Show all options
-python src/transcribe.py --settings                # Configure settings
-python src/transcribe.py --list                    # List all transcripts
-python src/transcribe.py --show 000042             # Show transcript by ID
+
+# Short options (recommended)
+python src/transcribe.py -s                        # Settings menu
+python src/transcribe.py -l                        # List all transcripts  
+python src/transcribe.py -v 000042                 # View transcript content
+python src/transcribe.py -g 000042                 # AI analysis and tagging
+
+# Long options (also available)  
+python src/transcribe.py --settings                # Same as -s
+python src/transcribe.py --list                    # Same as -l
+python src/transcribe.py --view 000042             # Same as -v
+python src/transcribe.py --genai 000042            # Same as -g
+
+# Other options
 python src/transcribe.py -000042                   # Append to transcript 000042
 python src/transcribe.py --device 1                # Use specific audio device
 ```
@@ -232,6 +267,52 @@ transcripts/
 - **No migration required** - both formats work together
 - **Gradual transition** as you create new transcripts
 
+## 🤖 AI Analysis Deep Dive
+
+### What the AI Extracts
+When you run `rec -g 000042`, the AI analyzes your transcript and extracts:
+
+**📋 Key Themes & Topics**
+- Main discussion topics and subjects
+- Recurring themes throughout the conversation
+- Central narrative threads
+
+**❓ Questions & Inquiries**  
+- Important questions asked during discussion
+- Information requests and clarifications
+- Decision points that need follow-up
+
+**✅ Actions & Decisions**
+- Action items assigned to individuals
+- Decisions made during the meeting
+- Next steps and commitments
+
+**🏷️ Smart Tags**
+- Relevant keywords and categories  
+- Technical terms and concepts mentioned
+- Project names and system references
+
+### Hierarchical Processing
+For large transcripts (3000+ characters), the AI uses advanced hierarchical processing:
+
+1. **📑 Chunking**: Breaks content into ~2000 character overlapping chunks
+2. **🔍 Chunk Analysis**: Each chunk summarized focusing on themes/questions/actions  
+3. **🎯 Meta-Summary**: Combines all chunk summaries into final analysis
+4. **⚡ Efficiency**: Handles transcripts up to 30,000+ characters reliably
+
+### AI Output Example
+```markdown
+📁 Filename: NHS_Patient_Flag_Implementation  
+📝 Summary: Discussion about implementing patient flags in NHS services, focusing on reasonable adjustments, data integration challenges, and supplier onboarding processes with September deadline.
+🏷️ Tags: reasonable-adjustments, data-integration, supplier-onboarding, nhs-england, patient-flags
+```
+
+### Configuration
+- **Model Selection**: Change AI model in settings (`rec -s` → AI settings)
+- **Content Limits**: Adjust max content length for processing
+- **Timeout Settings**: Configure how long to wait for AI responses
+- **Auto-metadata**: Toggle automatic AI analysis for new recordings
+
 ## 🔧 Troubleshooting
 
 ### "No audio detected"
@@ -247,7 +328,48 @@ transcripts/
 ### "AI features not working"
 - Check if Ollama is running: `ollama list`
 - Try a different model: `ollama pull gemma3:4b`
-- Disable AI features if needed: `rec --no-ai`
+- Restart Ollama: `ollama serve`
+- Check AI settings: `rec -s` → AI settings
+
+### "AI analysis fails on large files"
+- Content automatically truncated for very large files (15k+ chars)
+- Uses hierarchical processing to handle large content efficiently  
+- Check Ollama model has enough memory for processing
+- Try a smaller, faster model like `gemma3:4b`
+
+## 📋 Quick Reference Card
+
+### Essential Commands
+```bash
+rec           # Start new recording
+rec -l        # List all transcripts  
+rec -v 000042 # View transcript content
+rec -g 000042 # AI analysis (themes, questions, actions)
+rec -s        # Settings menu
+rec -000042   # Append to existing transcript
+```
+
+### AI Analysis Options  
+```bash
+rec -g 000042              # Analyze transcript by ID
+rec -g /path/to/file.md    # Analyze any text file  
+rec --genai 000042         # Same as -g (long form)
+```
+
+### File Management
+```bash  
+rec --list                 # List all transcripts (long form)
+rec --view 000042          # View content (long form)
+open-transcripts           # Open transcripts folder
+```
+
+### Advanced Options
+```bash
+rec --device 2             # Use specific microphone
+rec --language es          # Set language (Spanish)
+rec --no-copy              # Don't copy to clipboard
+rec --no-metadata          # Skip AI processing
+```
 
 ---
 

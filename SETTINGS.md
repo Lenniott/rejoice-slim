@@ -91,6 +91,27 @@ Whisper supports 99+ languages including:
 - **Disable if:** Want manual control over metadata
 - **Requirements:** Ollama must be installed and running
 
+## 🧠 AI Analysis Settings
+
+### Content Length Limits
+- **Setting:** `OLLAMA_MAX_CONTENT_LENGTH`
+- **Default:** 15,000 characters
+- **What it does:** Maximum content size for AI processing
+- **Large content:** Uses hierarchical chunking for files over 3,000 chars
+- **Adjust if:** Getting timeouts or want to process larger files
+
+### AI Analysis Features
+- **Command:** `rec -g 000042` (AI analysis of transcripts)
+- **Extracts:** Main themes, key questions, action items, narrative threads
+- **Processing:** Hierarchical summarization for large content (30k+ characters)
+- **Output:** Intelligent filename, comprehensive summary, relevant tags
+
+### AI Timeout Settings  
+- **Default:** 180 seconds (3 minutes)
+- **What it does:** How long to wait for AI responses
+- **Increase if:** Large files are timing out
+- **Decrease if:** Want faster failures on problematic content
+
 ## ⚡ Performance Settings
 
 ### Basic Mode Settings
