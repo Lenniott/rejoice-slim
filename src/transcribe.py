@@ -1214,16 +1214,19 @@ def main(args=None):
         print(f"❌ Error saving transcript: {e}")
         return
 
-    # 5. Show additional metadata summary if available
+    # 5. Add AI-generated summary and tags to frontmatter (if enabled)
     final_path = file_path  # Use the ID-based file path
     
-    if ollama_available and AUTO_METADATA and metadata and metadata.get('summary'):
-        print(f"📝 Summary: {metadata['summary']}")
-        if metadata.get('tags'):
-            print(f"🏷️  Tags: {', '.join(metadata['tags'])}")
+    if ollama_available and AUTO_METADATA:
+        print("🤖 Generating summary and tags...")
+        summarizer = SummarizationService(OLLAMA_MODEL)
+        success = summarizer.summarize_file(file_path, copy_to_notes=False)
+        if success:
+            print("✅ Summary and tags added to transcript metadata")
+        else:
+            print("⚠️ Could not generate AI summary - transcript saved without metadata")
     elif not ollama_available:
-        print("ℹ️  Ollama not available - using default filename")
-    # If AUTO_METADATA is False, we silently skip metadata generation
+        print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
     # 6. Handle post-transcription actions
     handle_post_transcription_actions(transcribed_text, final_path, ollama_available, args)

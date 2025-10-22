@@ -341,7 +341,7 @@ class SummarizationService:
             updated_frontmatter['tags'] = metadata['tags']
             
             # Add processing timestamp
-            updated_frontmatter['last_summarized'] = datetime.now().isoformat()
+            updated_frontmatter['last_processed'] = datetime.now().isoformat()
             
             # Generate new YAML
             yaml_content = yaml.dump(updated_frontmatter, default_flow_style=False, sort_keys=False)
