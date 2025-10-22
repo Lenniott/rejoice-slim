@@ -12,6 +12,7 @@ import numpy as np
 import whisper
 import requests
 import json
+import time
 from scipy.io.wavfile import write
 from datetime import datetime
 from dotenv import load_dotenv
@@ -79,15 +80,7 @@ logging.getLogger('audio_chunker').setLevel(logging.WARNING)
 logging.getLogger('transcription_worker').setLevel(logging.WARNING)
 logging.getLogger('vad_service').setLevel(logging.WARNING)
 
-def load_prompts():
-    """Load prompts from prompts.json file"""
-    prompts_path = os.path.join(os.path.dirname(__file__), '..', 'prompts.json')
-    try:
-        with open(prompts_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not load prompts file: {e}")
-        return {}
+# Old load_prompts function removed - now using SummarizationService._load_prompts
 
 def load_templates():
     """Load templates from templates.json file"""
@@ -99,66 +92,7 @@ def load_templates():
         print(f"⚠️ Could not load templates file: {e}")
         return {}
 
-def check_ollama_available():
-    """Check if Ollama is available and running"""
-    try:
-        response = requests.get("http://localhost:11434/api/version", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def call_ollama(prompt_key, text_content, prompts):
-    """Generic function to call Ollama with different prompts"""
-    if prompt_key not in prompts:
-        print(f"⚠️ Prompt '{prompt_key}' not found in prompts.json")
-        return None
-    
-    prompt_template = prompts[prompt_key]["prompt"]
-    # Send full transcript, not truncated
-    prompt = prompt_template.format(text=text_content)
-    
-    try:
-        payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.3,  # Lower temperature for faster, more focused responses
-                "top_p": 0.9,
-                "max_tokens": 200  # Limit response length for speed
-            }
-        }
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=OLLAMA_TIMEOUT)
-        response.raise_for_status()
-        
-        # Get response and clean it up
-        raw_response = json.loads(response.text)["response"].strip()
-        
-        # Remove thinking tags and extra content (more comprehensive)
-        import re
-        # Remove various thinking patterns
-        cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
-        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'\[thinking\].*?\[/thinking\]', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'^.*?(\{.*\}).*$', r'\1', cleaned, flags=re.DOTALL)  # Extract JSON if it exists
-        cleaned = cleaned.strip()
-        
-        return cleaned if cleaned else None
-        
-    except requests.exceptions.Timeout:
-        timeout_minutes = OLLAMA_TIMEOUT // 60
-        timeout_seconds = OLLAMA_TIMEOUT % 60
-        time_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
-        print(f"⚠️ Ollama response timed out after {time_str}")
-        print("💡 Tip: Use a faster model or increase timeout with: export OLLAMA_TIMEOUT=300")
-        return None
-    except requests.exceptions.ConnectionError:
-        print(f"⚠️ Could not connect to Ollama for {prompt_key}")
-        print("💡 Tip: Make sure Ollama is running with: ollama serve")
-        return None
-    except Exception as e:
-        print(f"⚠️ Ollama error for {prompt_key}: {e}")
-        return None
+# All AI functions moved to SummarizationService - transcribe.py just handles recording
 
 def deduplicate_transcript(transcript: str) -> str:
     """
@@ -204,71 +138,7 @@ def list_audio_devices():
             input_devices.append((i, device['name']))
     return input_devices
 
-def get_combined_metadata_from_llm(text_content):
-    """Gets filename, summary, and tags in one LLM call."""
-    if not check_ollama_available():
-        return None
-    
-    prompts = load_prompts()
-    result = call_ollama("combined_metadata", text_content, prompts)
-    
-    if result:
-        try:
-            # Try to extract JSON from the response
-            import re
-            json_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-            else:
-                json_str = result.strip()
-            
-            # Parse JSON response - handle extra data after JSON
-            try:
-                metadata = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                if "Extra data" in str(e):
-                    # Try to parse just the first valid JSON object
-                    lines = json_str.split('\n')
-                    json_lines = []
-                    for line in lines:
-                        json_lines.append(line)
-                        try:
-                            test_json = json.loads('\n'.join(json_lines))
-                            metadata = test_json
-                            break
-                        except json.JSONDecodeError:
-                            continue
-                    else:
-                        raise e
-                else:
-                    raise e
-            
-            # Validate required fields
-            if all(key in metadata for key in ['filename', 'summary', 'tags']):
-                # Clean up filename
-                filename = metadata['filename'].strip()
-                if not filename:
-                    return None
-                
-                # Clean up tags
-                tags = metadata['tags']
-                if isinstance(tags, list):
-                    tags = [tag.strip().lower().replace(' ', '-') for tag in tags if tag.strip()]
-                    tags = tags[:5]  # Limit to 5 tags max
-                else:
-                    tags = []
-                
-                return {
-                    'filename': filename,
-                    'summary': metadata['summary'].strip(),
-                    'tags': tags
-                }
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"⚠️ Error parsing LLM metadata response: {e}")
-            print(f"Raw response: {result[:200]}...")
-            return None
-    
-    return None
+# Old AI system removed - now using hierarchical SummarizationService only
 
 def update_env_setting(key, value):
     """Update a setting in the .env file"""
@@ -920,27 +790,68 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         recording_event.clear()
         
         # Process final partial chunk
+        print("🔍 Processing final chunk...")
         final_chunk = chunker.get_final_chunk()
         if final_chunk is not None:
+            print(f"📦 Adding final chunk to worker pool (size: {len(final_chunk)} samples)")
             worker_pool.add_chunk(final_chunk)
             vad_service.analyze_chunk(final_chunk)
+        else:
+            print("📦 No final chunk to process")
         
         # Wait for all workers to finish
         print("⏳ Finalizing transcription...")
-        worker_pool.stop()
-        vad_service.stop_recording()
+        
+        # Add timeout protection for cleanup phase
+        cleanup_start = time.time()
+        max_cleanup_time = 10.0  # 10 seconds max for cleanup
+        
+        # Stop worker pool with timeout to prevent hanging
+        try:
+            worker_pool.stop()
+            print("✅ Worker pool stopped")
+        except Exception as e:
+            print(f"⚠️ Worker pool cleanup issue: {e}")
+        
+        # Check if cleanup is taking too long
+        if time.time() - cleanup_start > max_cleanup_time:
+            print("⚠️ Cleanup taking too long, forcing completion")
+            return "Cleanup timeout - recording may have been too short"
+        
+        try:
+            vad_service.stop_recording()
+            print("✅ VAD service stopped")
+        except Exception as e:
+            print(f"⚠️ VAD service cleanup issue: {e}")
         
         # Get assembled transcript
-        transcript = worker_pool.get_assembled_transcript()
+        try:
+            transcript = worker_pool.get_assembled_transcript()
+            print("✅ Transcript assembled")
+        except Exception as e:
+            print(f"⚠️ Transcript assembly issue: {e}")
+            transcript = ""
         
         # If no chunks were processed, fall back to transcribing the full audio
         if not transcript.strip() and audio_data:
-            full_audio = np.concatenate(audio_data, axis=0)
-            if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
-                result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
-            else:
-                result = whisper_model.transcribe(full_audio, fp16=False)
-            transcript = result["text"].strip()
+            print("🔍 No chunks processed, attempting full audio transcription...")
+            try:
+                full_audio = np.concatenate(audio_data, axis=0)
+                print(f"📊 Full audio length: {len(full_audio)} samples")
+                
+                if len(full_audio) < 1600:  # Less than 0.1 seconds at 16kHz
+                    print("⚠️ Audio too short for transcription")
+                    return None
+                    
+                if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+                    result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
+                else:
+                    result = whisper_model.transcribe(full_audio, fp16=False)
+                transcript = result["text"].strip()
+                print("✅ Full audio transcription completed")
+            except Exception as e:
+                print(f"❌ Full audio transcription failed: {e}")
+                return None
         
         if not transcript.strip():
             print("No speech detected in the audio.")
@@ -1241,22 +1152,13 @@ def main(args=None):
         pyperclip.copy(transcribed_text)
         print("📋 Transcription copied to clipboard.")
 
-    # 4. Generate filename and save transcript
+    # 4. Save transcript with default filename first, then let AI rename it
     file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-    
-    # Try to get AI-generated filename if Ollama is available
-    generated_filename = "transcript"  # default
-    ollama_available = check_ollama_available()
-    
-    if ollama_available and AUTO_METADATA:
-        metadata = get_combined_metadata_from_llm(transcribed_text)
-        if metadata and metadata.get('filename'):
-            generated_filename = metadata['filename']
     
     try:
         file_path, transcript_id = file_manager.create_new_transcript(
             transcribed_text, 
-            generated_filename
+            "transcript"  # Use default name initially
         )
         print(f"✅ Successfully saved transcript to: {file_path}")
         print(f"🆔 Transcript ID: {transcript_id}")
@@ -1264,26 +1166,26 @@ def main(args=None):
         print(f"❌ Error saving transcript: {e}")
         return
 
-    # 5. Add AI-generated summary and tags to frontmatter (if enabled)
-    final_path = file_path  # Use the ID-based file path
-    
-    if ollama_available and AUTO_METADATA:
-        print("🤖 Generating summary and tags...")
+    # 5. Add AI-generated summary, tags, and proper filename (if enabled)
+    if AUTO_METADATA:
+        print("🤖 Generating AI analysis...")
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
             ollama_timeout=OLLAMA_TIMEOUT,
             max_content_length=OLLAMA_MAX_CONTENT_LENGTH
         )
-        success = summarizer.summarize_file(file_path, copy_to_notes=False)
-        if success:
-            print("✅ Summary and tags added to transcript metadata")
+        if summarizer.check_ollama_available():
+            success = summarizer.summarize_file(file_path, copy_to_notes=False)
+            if success:
+                print("✅ Summary and tags added to transcript metadata")
+            else:
+                print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
-            print("⚠️ Could not generate AI summary - transcript saved without metadata")
-    elif not ollama_available:
-        print("ℹ️  Ollama not available - transcript saved without AI metadata")
+            print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
     # 6. Handle post-transcription actions
-    handle_post_transcription_actions(transcribed_text, final_path, ollama_available, args)
+    summarizer_for_check = SummarizationService(ollama_model=OLLAMA_MODEL)
+    handle_post_transcription_actions(transcribed_text, file_path, summarizer_for_check.check_ollama_available(), args)
 
 if __name__ == "__main__":
     # Parse command line arguments

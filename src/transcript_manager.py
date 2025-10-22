@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional, Tuple, List, Callable
 from id_generator import TranscriptIDGenerator
 from file_header import TranscriptHeader
+import string
 
 
 class TranscriptFileManager:
@@ -290,17 +291,7 @@ class TranscriptFileManager:
         return num >= 1
     
     def _clean_filename(self, filename: str) -> str:
-        """
-        Clean filename to make it filesystem-safe.
-        
-        Args:
-            filename: Raw filename to clean
-            
-        Returns:
-            str: Cleaned filename safe for filesystem
-        """
-        import string
-        
+        """Clean filename to make it filesystem-safe."""
         # Remove or replace invalid characters
         valid_chars = f"-_.{string.ascii_letters}{string.digits}"
         cleaned = ''.join(c if c in valid_chars else '_' for c in filename)

@@ -85,7 +85,8 @@ class SummarizationService:
                     }
                 }
                 
-                print(f"🤖 Calling Ollama (attempt {attempt + 1}/{max_retries})...")
+                if attempt == 0:  # Only show on first attempt
+                    print(f"🤖 Calling Ollama...")
                 response = requests.post(self.ollama_api_url, json=payload, timeout=self.ollama_timeout)
                 response.raise_for_status()
                 
@@ -94,46 +95,34 @@ class SummarizationService:
                 raw_response = response_data.get("response", "").strip()
                 
                 if not raw_response:
-                    print(f"   ⚠️ Empty response from Ollama (attempt {attempt + 1})")
                     continue
                 
                 # With structured outputs, response should already be valid JSON
                 if raw_response.strip():
-                    print(f"   📋 Summary generated: {len(raw_response)} chars")
                     return raw_response.strip()
                 else:
-                    print(f"   ⚠️ Empty structured response from Ollama (attempt {attempt + 1})")
                     continue
                 
             except requests.exceptions.Timeout:
-                timeout_minutes = self.ollama_timeout // 60
-                timeout_seconds = self.ollama_timeout % 60
-                time_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
-                print(f"⚠️ Ollama request timed out after {time_str} (attempt {attempt + 1})")
-                print(f"   📊 Prompt length: {len(prompt)} characters")
+                if attempt == max_retries - 1:  # Only show on last attempt
+                    timeout_minutes = self.ollama_timeout // 60
+                    timeout_seconds = self.ollama_timeout % 60
+                    time_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+                    print(f"⚠️ Ollama timeout after {time_str}")
                 
             except requests.exceptions.ConnectionError:
-                print(f"⚠️ Could not connect to Ollama (attempt {attempt + 1})")
-                print(f"   🔌 API URL: {self.ollama_api_url}")
-                print(f"   🤖 Model: {self.ollama_model}")
+                if attempt == max_retries - 1:  # Only show on last attempt
+                    print(f"⚠️ Could not connect to Ollama")
                 
             except Exception as e:
-                print(f"⚠️ Ollama error (attempt {attempt + 1}): {e}")
-                print(f"   🔍 Exception type: {type(e).__name__}")
-                if hasattr(e, 'response') and e.response:
-                    print(f"   📤 HTTP Status: {e.response.status_code}")
-                    print(f"   📋 Response: {e.response.text[:200]}...")
+                if attempt == max_retries - 1:  # Only show on last attempt
+                    print(f"⚠️ Ollama error: {e}")
             
             if attempt < max_retries - 1:
-                print("   Retrying in 2 seconds...")
                 import time
                 time.sleep(2)
         
         print(f"❌ Ollama failed after {max_retries} attempts")
-        print("💡 Tips:")
-        print("   - Check if Ollama is running: ollama list")
-        print("   - Try a different model: ollama pull gemma3:4b")
-        print("   - Restart Ollama: ollama serve")
         return None
     
     def _sanitize_json_string(self, text: str) -> str:
@@ -216,8 +205,7 @@ class SummarizationService:
 
     def _clean_ollama_response(self, raw_response: str) -> Optional[str]:
         """Clean up Ollama response and extract JSON."""
-        print(f"   🔍 Raw response length: {len(raw_response)} characters")
-        print(f"   📋 Raw response preview: {raw_response[:300]}{'...' if len(raw_response) > 300 else ''}")
+        # Reduced verbose output - only show on debug if needed
         
         # Remove various thinking patterns
         cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
@@ -236,8 +224,6 @@ class SummarizationService:
         for i, pattern in enumerate(json_patterns):
             matches = re.findall(pattern, cleaned, re.DOTALL | re.IGNORECASE)
             if matches:
-                print(f"   ✅ JSON pattern {i+1} matched: {len(matches)} match(es)")
-                print(f"   📄 First match preview: {str(matches[0])[:100]}...")
                 # Take the first match and clean it up
                 json_candidate = matches[0]
                 if isinstance(json_candidate, tuple):
@@ -274,7 +260,6 @@ class SummarizationService:
         
         # Use hierarchical summarization for large content
         if len(text_content) > 3000:
-            print(f"📚 Large content detected ({len(text_content)} chars), using hierarchical summarization")
             return self._hierarchical_summarize(text_content)
         
         # Use single-step for smaller content
@@ -400,14 +385,11 @@ JSON:"""
         overlap = 150       # Reduced overlap for cleaner boundaries
         chunks = self._create_smart_chunks(text_content, chunk_size, overlap)
         
-        print(f"   📑 Processing {len(chunks)} chunks of ~{chunk_size} characters each")
-        
         # Step 2: Summarize each chunk
         chunk_summaries = []
         chunk_prompt_template = self.prompts["chunk_summary"]["prompt"]
         
         for i, chunk in enumerate(chunks):
-            print(f"   🔍 Processing chunk {i+1}/{len(chunks)}")
             chunk_prompt = chunk_prompt_template.format(text=chunk)
             
             chunk_result = self._call_ollama(chunk_prompt)
@@ -425,14 +407,10 @@ JSON:"""
             print("❌ No chunks were successfully summarized")
             return None
         
-        print(f"   ✅ Generated {len(chunk_summaries)} chunk summaries")
-        
         # Step 3: Create meta-summary from chunk summaries
         combined_summaries = "\n".join(chunk_summaries)
         meta_prompt_template = self.prompts["meta_summary"]["prompt"]
         meta_prompt = meta_prompt_template.format(text=combined_summaries)
-        
-        print("   🎯 Creating meta-summary from chunks")
         meta_result = self._call_ollama(meta_prompt)
         if not meta_result:
             print("❌ Failed to create meta-summary")
