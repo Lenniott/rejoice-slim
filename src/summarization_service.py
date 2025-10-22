@@ -85,8 +85,6 @@ class SummarizationService:
                     }
                 }
                 
-                if attempt == 0:  # Only show on first attempt
-                    print(f"🤖 Calling Ollama...")
                 response = requests.post(self.ollama_api_url, json=payload, timeout=self.ollama_timeout)
                 response.raise_for_status()
                 
@@ -238,9 +236,7 @@ class SummarizationService:
                         return repaired
                     return json_candidate
         
-        print(f"⚠️ Could not extract valid JSON from response")
-        if raw_response:
-            print(f"   Response preview: {raw_response[:100]}{'...' if len(raw_response) > 100 else ''}")
+        # Could not extract valid JSON from response
         return None
     
     def get_metadata(self, text_content: str) -> Optional[Dict[str, Any]]:
@@ -255,7 +251,6 @@ class SummarizationService:
             dict or None: Metadata with 'filename', 'summary', 'tags' keys
         """
         if not self.check_ollama_available():
-            print("❌ Ollama not available - skipping AI metadata generation")
             return None
         
         # Use hierarchical summarization for large content
@@ -264,19 +259,16 @@ class SummarizationService:
         
         # Use single-step for smaller content
         if "combined_metadata" not in self.prompts:
-            print("❌ Combined metadata prompt not found in prompts.json")
             return None
         
         # Handle very large content by truncating if necessary
         max_content_length = int(os.getenv('OLLAMA_MAX_CONTENT_LENGTH', '15000'))
         if len(text_content) > max_content_length:
-            print(f"   ⚠️ Content too large ({len(text_content)} chars), truncating to {max_content_length}")
             # Take first 80% and last 20% to preserve more beginning context where topics are mentioned
             split_point = int(max_content_length * 0.8)
             remaining = max_content_length - split_point
             truncated_content = text_content[:split_point] + "\n\n[... content truncated ...]\n\n" + text_content[-remaining:]
             text_content = truncated_content
-            print(f"   📝 Using truncated content: {len(text_content)} chars")
         
         prompt_template = self.prompts["combined_metadata"]["prompt"]
         prompt = prompt_template.format(text=text_content)
@@ -291,7 +283,6 @@ class SummarizationService:
             return parsed_result
         
         # If parsing failed, try a simpler fallback prompt with better content sampling
-        print("   🔄 Trying simplified fallback prompt...")
         
         # Take a better sample: beginning + middle + end
         content_len = len(text_content)
@@ -425,24 +416,18 @@ JSON:"""
             # Parse JSON response
             metadata = json.loads(result)
             
-            # Enhanced validation with detailed logging
+            # Validate required fields
             required_fields = ['filename', 'summary', 'tags']
-            received_fields = list(metadata.keys())
-            
-            print(f"   🔍 Expected fields: {required_fields}")
-            print(f"   📥 Received fields: {received_fields}")
             
             if all(key in metadata for key in required_fields):
                 # Clean up filename
                 filename = metadata['filename'].strip()
                 if not filename:
-                    print("❌ Empty filename after cleaning")
                     return None
                 
                 # Validate and clean up summary
                 summary = metadata['summary'].strip()
                 if not summary:
-                    print("❌ Empty summary after cleaning")
                     return None
                 
                 # Clean up tags
@@ -451,13 +436,7 @@ JSON:"""
                     tags = [tag.strip().lower().replace(' ', '-') for tag in tags if tag.strip()]
                     tags = tags[:5]  # Limit to 5 tags max
                 else:
-                    print(f"⚠️ Tags field is not a list: {type(tags)}, converting to empty list")
                     tags = []
-                
-                print(f"✅ Successfully parsed and validated metadata:")
-                print(f"   📁 Filename: {filename}")
-                print(f"   📝 Summary: {summary[:100]}{'...' if len(summary) > 100 else ''}")
-                print(f"   🏷️ Tags: {', '.join(tags) if tags else 'None'}")
                 
                 return {
                     'filename': filename,
@@ -465,19 +444,9 @@ JSON:"""
                     'tags': tags
                 }
             else:
-                missing_fields = [field for field in required_fields if field not in metadata]
-                unexpected_fields = [field for field in received_fields if field not in required_fields]
-                
-                print(f"❌ Schema validation failed!")
-                print(f"   Missing fields: {missing_fields}")
-                print(f"   Unexpected fields: {unexpected_fields}")
-                print(f"   Full response: {metadata}")
                 return None
                 
         except json.JSONDecodeError as e:
-            print(f"❌ Error parsing AI response as JSON: {e}")
-            print(f"   Content length: {len(result)} characters")
-            print(f"   Response preview: {result[:300]}{'...' if len(result) > 300 else ''}")
             return None
         
         return None
@@ -509,18 +478,13 @@ JSON:"""
                 print("❌ No text content found in file")
                 return False
             
-            print(f"📖 Analyzing file: {os.path.basename(file_path)}")
-            print(f"   Content length: {len(text_content)} characters")
-            
             # Truncate very long content to avoid Ollama timeouts
             if len(text_content) > self.max_content_length:
-                print(f"   ⚠️ Content is very long, using first {self.max_content_length} characters for analysis")
                 text_content = text_content[:self.max_content_length] + "..."
             
             # Get AI metadata
             metadata = self.get_metadata(text_content)
             if not metadata:
-                print("⚠️ Could not generate AI metadata - file not processed")
                 return False
             
             # Update or create frontmatter
@@ -554,21 +518,10 @@ JSON:"""
                     new_output_path = self._rename_transcript_with_ai_filename(file_path, metadata['filename'], frontmatter_data)
                     if new_output_path and new_output_path != file_path:
                         output_path = new_output_path
-                        print(f"📝 Renaming to: {os.path.basename(output_path)}")
-                    else:
-                        print(f"📝 Updating existing file: {os.path.basename(file_path)}")
-                else:
-                    print(f"📝 Updating existing file: {os.path.basename(file_path)}")
             
             # Write updated content
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(updated_content)
-            
-            print(f"✅ File processed successfully!")
-            print(f"   📁 Saved to: {output_path}")
-            print(f"   📝 Summary: {metadata['summary']}")
-            if metadata['tags']:
-                print(f"   🏷️  Tags: {', '.join(metadata['tags'])}")
             
             return True
             

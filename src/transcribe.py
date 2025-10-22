@@ -580,10 +580,6 @@ def _global_signal_handler(signum, frame):
             _global_recording_state['cancelled'].set()
         if _global_recording_state['recording_event']:
             _global_recording_state['recording_event'].clear()
-            
-        # Force flush to ensure message is shown immediately
-        sys.stdout.flush()
-        sys.stderr.flush()
     except Exception:
         # Ensure we always set the cancelled flag even if printing fails
         if _global_recording_state['cancelled']:
@@ -612,7 +608,6 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     )
     
     # Load Whisper model with clean interruption handling
-    print("🤫 Loading Whisper model...")
     try:
         whisper_model = whisper.load_model(WHISPER_MODEL)
     except KeyboardInterrupt:
@@ -674,8 +669,7 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     
     def audio_callback(indata, frames, time, status):
         """Callback for sounddevice audio stream."""
-        if status:
-            print(status, file=sys.stderr)
+        # Removed status printing that was causing spacing issues
         
         if recording_event.is_set():
             # Convert 2D array (channels x samples) to 1D array (samples)
@@ -713,11 +707,12 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
                     if check_keyboard_input(fd):
                         char = get_keyboard_char()
                         if char == '\r' or char == '\n':  # Enter key
-                            print("\n✅ Recording stopped by user.")
+                            print("✅ Recording stopped by user.")
+                            sys.stdout.flush()
                             recording_event.clear()
                             break
                         elif ord(char) == 3:  # Ctrl+C (ASCII 3)
-                            print("\n🚫 Recording cancelled by user (Ctrl+C detected in keyboard listener).")
+                            print("🚫 Recording cancelled by user (Ctrl+C detected in keyboard listener).")
                             cancelled.set()
                             recording_event.clear()
                             break
@@ -727,16 +722,17 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
                 try:
                     input()  # This will block until Enter is pressed
                     if recording_event.is_set():  # Only stop if still recording
-                        print("\n✅ Recording stopped by user.")
+                        print("✅ Recording stopped by user.")
+                        sys.stdout.flush()
                         recording_event.clear()
                 except (EOFError, KeyboardInterrupt):
                     if recording_event.is_set():
-                        print("\n🚫 Recording cancelled by user.")
+                        print("🚫 Recording cancelled by user.")
                         cancelled.set()
                         recording_event.clear()
         except KeyboardInterrupt:
             # Backup Ctrl+C handling in keyboard listener
-            print("\n🚫 Recording cancelled by user (Ctrl+C in keyboard thread).")
+            print("🚫 Recording cancelled by user (Ctrl+C in keyboard thread).")
             cancelled.set()
             recording_event.clear()
         except Exception as e:
@@ -769,9 +765,9 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         except KeyboardInterrupt:
             # Backup Ctrl+C handling in case signal handler doesn't work
             if sys.platform == "darwin":  # macOS
-                print("\n🚫 Recording cancelled by user (Ctrl+C).")
+                print("🚫 Recording cancelled by user (Ctrl+C).")
             else:
-                print("\n🚫 Recording cancelled by user.")
+                print("🚫 Recording cancelled by user.")
             cancelled.set()
             recording_event.clear()
         
@@ -779,27 +775,25 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         stream.stop()
         stream.close()
         
+        # Brief pause to ensure audio stream cleanup is complete
+        time.sleep(0.1)
+        
         # Check if recording was cancelled
         if cancelled.is_set():
             print("Recording cancelled. No file will be saved.")
             return None
         
-        print("\nRecording finished. Processing final chunk...")
-        
         # Stop recording
         recording_event.clear()
         
         # Process final partial chunk
-        print("🔍 Processing final chunk...")
         final_chunk = chunker.get_final_chunk()
         if final_chunk is not None:
-            print(f"📦 Adding final chunk to worker pool (size: {len(final_chunk)} samples)")
             worker_pool.add_chunk(final_chunk)
             vad_service.analyze_chunk(final_chunk)
-        else:
-            print("📦 No final chunk to process")
         
         # Wait for all workers to finish
+        print()
         print("⏳ Finalizing transcription...")
         
         # Add timeout protection for cleanup phase
@@ -809,7 +803,6 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         # Stop worker pool with timeout to prevent hanging
         try:
             worker_pool.stop()
-            print("✅ Worker pool stopped")
         except Exception as e:
             print(f"⚠️ Worker pool cleanup issue: {e}")
         
@@ -820,24 +813,20 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         
         try:
             vad_service.stop_recording()
-            print("✅ VAD service stopped")
         except Exception as e:
             print(f"⚠️ VAD service cleanup issue: {e}")
         
         # Get assembled transcript
         try:
             transcript = worker_pool.get_assembled_transcript()
-            print("✅ Transcript assembled")
         except Exception as e:
             print(f"⚠️ Transcript assembly issue: {e}")
             transcript = ""
         
         # If no chunks were processed, fall back to transcribing the full audio
         if not transcript.strip() and audio_data:
-            print("🔍 No chunks processed, attempting full audio transcription...")
             try:
                 full_audio = np.concatenate(audio_data, axis=0)
-                print(f"📊 Full audio length: {len(full_audio)} samples")
                 
                 if len(full_audio) < 1600:  # Less than 0.1 seconds at 16kHz
                     print("⚠️ Audio too short for transcription")
@@ -1143,13 +1132,10 @@ def main(args=None):
     # 2. Deduplicate transcript to remove any repetition from chunk overlap
     transcribed_text = deduplicate_transcript(transcribed_text)
 
-    print("\n--- TRANSCRIPT ---")
-    print(transcribed_text)
-    print("--------------------")
-
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
         pyperclip.copy(transcribed_text)
+        print()
         print("📋 Transcription copied to clipboard.")
 
     # 4. Save transcript with default filename first, then let AI rename it
@@ -1160,15 +1146,14 @@ def main(args=None):
             transcribed_text, 
             "transcript"  # Use default name initially
         )
-        print(f"✅ Successfully saved transcript to: {file_path}")
-        print(f"🆔 Transcript ID: {transcript_id}")
+        print(f"✅ Transcript {transcript_id} successfully saved")
     except Exception as e:
         print(f"❌ Error saving transcript: {e}")
         return
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA:
-        print("🤖 Generating AI analysis...")
+        print("🤖 Generating summary and tags...")
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
             ollama_timeout=OLLAMA_TIMEOUT,
