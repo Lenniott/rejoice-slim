@@ -59,7 +59,7 @@ python3 configure.py
 
 # 6. Clean up old aliases and create new ones
 echo "🔗 Setting up aliases in your ~/.zshrc file..."
-PROJECT_DIR="$(pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
 
 # Get the command name from .env file 
@@ -88,10 +88,17 @@ if [ -f ".env" ]; then
             ' ~/.zshrc > ~/.zshrc.tmp && mv ~/.zshrc.tmp ~/.zshrc
         fi
         
-        # Add fresh aliases
+        # Add fresh aliases with dynamic path resolution
         echo -e "\n# Added by Local Transcriber Setup" >> ~/.zshrc
-        echo "alias $COMMAND_NAME='$VENV_PYTHON $PROJECT_DIR/src/transcribe.py'" >> ~/.zshrc
-        echo "alias $COMMAND_NAME-settings='$VENV_PYTHON $PROJECT_DIR/src/transcribe.py --settings'" >> ~/.zshrc
+        echo "$COMMAND_NAME() {" >> ~/.zshrc
+        echo "    local script_dir=\"\$(dirname \"\$(readlink -f \"\$0\" 2>/dev/null || echo \"\$0\")\")\"" >> ~/.zshrc
+        echo "    local project_dir=\"$PROJECT_DIR\"" >> ~/.zshrc
+        echo "    \"\$project_dir/venv/bin/python\" \"\$project_dir/src/transcribe.py\" \"\$@\"" >> ~/.zshrc
+        echo "}" >> ~/.zshrc
+        echo "$COMMAND_NAME-settings() {" >> ~/.zshrc
+        echo "    local project_dir=\"$PROJECT_DIR\"" >> ~/.zshrc
+        echo "    \"\$project_dir/venv/bin/python\" \"\$project_dir/src/transcribe.py\" --settings \"\$@\"" >> ~/.zshrc
+        echo "}" >> ~/.zshrc
         
         # Create the open-transcripts alias as well
         SAVE_PATH=$(grep "^SAVE_PATH=" .env | cut -d'=' -f2 | tr -d '"' | tr -d "'")

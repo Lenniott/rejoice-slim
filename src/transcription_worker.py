@@ -76,11 +76,16 @@ class TranscriptionWorker:
         logger.info(f"TranscriptionWorker {self.worker_id} started")
     
     def stop(self) -> None:
-        """Stop the worker thread gracefully."""
+        """Stop the worker thread gracefully with timeout protection."""
+        logger.debug(f"Stopping worker {self.worker_id}")
         self.stop_event.set()
+        
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=5.0)
-            logger.info(f"TranscriptionWorker {self.worker_id} stopped")
+            self.thread.join(timeout=3.0)  # Reduced timeout to prevent hanging
+            if self.thread.is_alive():
+                logger.warning(f"TranscriptionWorker {self.worker_id} didn't stop within timeout")
+            else:
+                logger.debug(f"TranscriptionWorker {self.worker_id} stopped successfully")
     
     def _worker_loop(self) -> None:
         """Main worker loop that processes chunks from the queue."""
@@ -241,17 +246,29 @@ class TranscriptionWorkerPool:
         logger.info(f"Started {self.num_workers} transcription workers")
     
     def stop(self) -> None:
-        """Stop all workers in the pool."""
-        # Send sentinel values to stop workers
-        for _ in range(self.num_workers):
-            self.chunk_queue.put(None)
+        """Stop all workers in the pool with timeout protection."""
+        logger.info(f"Stopping {len(self.workers)} transcription workers...")
         
-        # Stop all workers
-        for worker in self.workers:
-            worker.stop()
+        # Send sentinel values to stop workers
+        try:
+            for i in range(self.num_workers):
+                self.chunk_queue.put(None)
+                logger.debug(f"Sent stop signal to worker {i+1}")
+        except Exception as e:
+            logger.warning(f"Error sending stop signals: {e}")
+        
+        # Stop all workers with timeout protection
+        stopped_count = 0
+        for i, worker in enumerate(self.workers):
+            try:
+                worker.stop()
+                stopped_count += 1
+                logger.debug(f"Worker {i+1} stopped successfully")
+            except Exception as e:
+                logger.warning(f"Error stopping worker {i+1}: {e}")
         
         self.workers.clear()
-        logger.info("All transcription workers stopped")
+        logger.info(f"Stopped {stopped_count}/{self.num_workers} transcription workers successfully")
     
     def add_chunk(self, audio_chunk: np.ndarray) -> None:
         """

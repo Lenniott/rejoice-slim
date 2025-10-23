@@ -1,6 +1,14 @@
 {
+  "chunk_summary": {
+    "prompt": "Summarize this text chunk focusing on main questions asked, actions mentioned, and key themes. Keep it concise (1-2 sentences max):\n\n{text}\n\nSummary:",
+    "description": "Summarizes individual text chunks for hierarchical processing"
+  },
+  "meta_summary": {
+    "prompt": "Analyze these chunk summaries to identify the overall narrative thread. Return ONLY valid JSON:\n\n{{ \"filename\": \"main-topic-name\", \"summary\": \"Overall summary covering main questions, actions, and themes from the transcript.\", \"tags\": [\"theme1\", \"action1\", \"topic1\"] }}\n\nChunk summaries:\n{text}\n\nExtract:\n- filename: Main topic/purpose using hyphens\n- summary: Key questions asked, main actions discussed, central themes (max 400 chars, no quotes)\n- tags: Important themes, actions, and topics mentioned\n\nJSON:",
+    "description": "Creates final metadata from hierarchical chunk summaries"
+  },
   "combined_metadata": {
-    "prompt": "Extract key info from this transcription. Return ONLY JSON:\n{{\n  \"filename\": \"brief_topic_name\",\n  \"summary\": \"two sentence summary\",\n  \"tags\": [\"tag1\", \"tag2\"]\n}}\n\nTranscription: {text}",
-    "description": "Generates all metadata in one call"
+    "prompt": "Return ONLY this exact JSON format. Do not add extra fields or change the structure:\n\n{{ \"filename\": \"REPLACE_WITH_TOPIC\", \"summary\": \"REPLACE_WITH_SUMMARY\", \"tags\": [\"REPLACE_WITH_TAG1\", \"REPLACE_WITH_TAG2\", \"REPLACE_WITH_TAG3\"] }}\n\nReplace the placeholder values:\n- REPLACE_WITH_TOPIC: main topic using hyphens (like healthcare-integration)\n- REPLACE_WITH_SUMMARY: 2-3 sentences about the content (no quotes, no line breaks, max 400 chars)\n- REPLACE_WITH_TAG1/2/3: relevant keywords (lowercase, use hyphens)\n\nContent to analyze:\n{text}\n\nJSON:",
+    "description": "Fallback single-step metadata generation for smaller content"
   }
 }

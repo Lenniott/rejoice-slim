@@ -12,6 +12,7 @@ import numpy as np
 import whisper
 import requests
 import json
+import time
 from scipy.io.wavfile import write
 from datetime import datetime
 from dotenv import load_dotenv
@@ -22,12 +23,24 @@ import threading
 import queue
 import logging
 import uuid
+import signal
+import select
+import termios
+import tty
 from typing import Optional, Dict, Any
 
 # Import our new chunking components
 from audio_chunker import AudioChunker
 from transcription_worker import TranscriptionWorkerPool
 from vad_service import VADService
+
+# Import our new ID-based transcript management
+from transcript_manager import TranscriptFileManager
+from id_generator import TranscriptIDGenerator
+from file_header import TranscriptHeader
+
+# Import summarization service
+from summarization_service import SummarizationService
 
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -36,10 +49,12 @@ OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "md")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:270m")
+OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))  # Character limit for AI processing
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
 
 # Real-time chunking configuration
@@ -65,15 +80,7 @@ logging.getLogger('audio_chunker').setLevel(logging.WARNING)
 logging.getLogger('transcription_worker').setLevel(logging.WARNING)
 logging.getLogger('vad_service').setLevel(logging.WARNING)
 
-def load_prompts():
-    """Load prompts from prompts.json file"""
-    prompts_path = os.path.join(os.path.dirname(__file__), '..', 'prompts.json')
-    try:
-        with open(prompts_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not load prompts file: {e}")
-        return {}
+# Old load_prompts function removed - now using SummarizationService._load_prompts
 
 def load_templates():
     """Load templates from templates.json file"""
@@ -85,55 +92,7 @@ def load_templates():
         print(f"⚠️ Could not load templates file: {e}")
         return {}
 
-def check_ollama_available():
-    """Check if Ollama is available and running"""
-    try:
-        response = requests.get("http://localhost:11434/api/version", timeout=2)
-        return response.status_code == 200
-    except:
-        return False
-
-def call_ollama(prompt_key, text_content, prompts):
-    """Generic function to call Ollama with different prompts"""
-    if prompt_key not in prompts:
-        print(f"⚠️ Prompt '{prompt_key}' not found in prompts.json")
-        return None
-    
-    prompt_template = prompts[prompt_key]["prompt"]
-    # Send full transcript, not truncated
-    prompt = prompt_template.format(text=text_content)
-    
-    try:
-        payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.3,  # Lower temperature for faster, more focused responses
-                "top_p": 0.9,
-                "max_tokens": 200  # Limit response length for speed
-            }
-        }
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=10)
-        response.raise_for_status()
-        
-        # Get response and clean it up
-        raw_response = json.loads(response.text)["response"].strip()
-        
-        # Remove thinking tags and extra content (more comprehensive)
-        import re
-        # Remove various thinking patterns
-        cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
-        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'\[thinking\].*?\[/thinking\]', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'^.*?(\{.*\}).*$', r'\1', cleaned, flags=re.DOTALL)  # Extract JSON if it exists
-        cleaned = cleaned.strip()
-        
-        return cleaned if cleaned else None
-        
-    except Exception as e:
-        print(f"⚠️ Could not connect to Ollama for {prompt_key} ({e})")
-        return None
+# All AI functions moved to SummarizationService - transcribe.py just handles recording
 
 def deduplicate_transcript(transcript: str) -> str:
     """
@@ -179,71 +138,7 @@ def list_audio_devices():
             input_devices.append((i, device['name']))
     return input_devices
 
-def get_combined_metadata_from_llm(text_content):
-    """Gets filename, summary, and tags in one LLM call."""
-    if not check_ollama_available():
-        return None
-    
-    prompts = load_prompts()
-    result = call_ollama("combined_metadata", text_content, prompts)
-    
-    if result:
-        try:
-            # Try to extract JSON from the response
-            import re
-            json_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-            else:
-                json_str = result.strip()
-            
-            # Parse JSON response - handle extra data after JSON
-            try:
-                metadata = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                if "Extra data" in str(e):
-                    # Try to parse just the first valid JSON object
-                    lines = json_str.split('\n')
-                    json_lines = []
-                    for line in lines:
-                        json_lines.append(line)
-                        try:
-                            test_json = json.loads('\n'.join(json_lines))
-                            metadata = test_json
-                            break
-                        except json.JSONDecodeError:
-                            continue
-                    else:
-                        raise e
-                else:
-                    raise e
-            
-            # Validate required fields
-            if all(key in metadata for key in ['filename', 'summary', 'tags']):
-                # Clean up filename
-                filename = metadata['filename'].strip()
-                if not filename:
-                    return None
-                
-                # Clean up tags
-                tags = metadata['tags']
-                if isinstance(tags, list):
-                    tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                    tags = tags[:5]  # Limit to 5 tags max
-                else:
-                    tags = []
-                
-                return {
-                    'filename': filename,
-                    'summary': metadata['summary'].strip(),
-                    'tags': tags
-                }
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"⚠️ Error parsing LLM metadata response: {e}")
-            print(f"Raw response: {result[:200]}...")
-            return None
-    
-    return None
+# Old AI system removed - now using hierarchical SummarizationService only
 
 def update_env_setting(key, value):
     """Update a setting in the .env file"""
@@ -269,38 +164,51 @@ def update_env_setting(key, value):
     # Write back to file
     with open(env_path, 'w') as f:
         f.writelines(lines)
+    
+    # Also update the current process environment
+    os.environ[key] = value
 
 def settings_menu():
     """Interactive settings menu with categories"""
-    print("\n⚙️  Settings Menu")
-    print("─" * 50)
-    
-    while True:
-        print("\n📋 Settings Categories:")
-        print("  1. 📝 Transcription (Whisper model, language)")
-        print("  2. 📁 Output (Format, save path, auto-actions)")
-        print("  3. 🤖 AI (Ollama model, auto-metadata)")
-        print("  4. 🎤 Audio (Microphone device)")
-        print("  5. ⚡ Performance (Chunking, auto-stop)")
-        print("  6. 🚪 Exit")
+    try:
+        print("\n⚙️  Settings Menu")
+        print("─" * 50)
         
-        choice = input("\n👉 Choose a category (1-6): ").strip()
-        
-        if choice == "1":
-            transcription_settings()
-        elif choice == "2":
-            output_settings()
-        elif choice == "3":
-            ai_settings()
-        elif choice == "4":
-            audio_settings()
-        elif choice == "5":
-            advanced_performance_settings()
-        elif choice == "6":
-            print("👋 Exiting settings...")
-            break
+        while True:
+            print("\n📋 Settings Categories:")
+            print("  1. 📝 Transcription (Whisper model, language)")
+            print("  2. 📁 Output (Format, save path, auto-actions)")
+            print("  3. 🤖 AI (Ollama model, auto-metadata)")
+            print("  4. 🎤 Audio (Microphone device)")
+            print("  5. ⚡ Performance (Chunking, auto-stop)")
+            print("  6. 🚪 Exit")
+            
+            choice = input("\n👉 Choose a category (1-6): ").strip()
+            
+            if choice == "1":
+                transcription_settings()
+            elif choice == "2":
+                output_settings()
+            elif choice == "3":
+                ai_settings()
+            elif choice == "4":
+                audio_settings()
+            elif choice == "5":
+                advanced_performance_settings()
+            elif choice == "6":
+                print("👋 Exiting settings...")
+                break
+            else:
+                print("❌ Invalid choice. Please select 1-6.")
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n\n👋 Settings menu cancelled by user (Ctrl+C).")
         else:
-            print("❌ Invalid choice. Please select 1-6.")
+            print("\n\n👋 Settings menu cancelled by user.")
+    except EOFError:
+        print("\n\n👋 Settings menu closed.")
+    except Exception as e:
+        print(f"\n❌ Error in settings menu: {e}")
 
 def transcription_settings():
     """Transcription settings submenu"""
@@ -425,15 +333,29 @@ def output_settings():
 def ai_settings():
     """AI settings submenu"""
     while True:
+        # Read current values dynamically from environment
+        current_model = os.getenv('OLLAMA_MODEL', 'gemma3:270m')
+        current_metadata = os.getenv('AUTO_METADATA', 'false').lower() == 'true'
+        current_timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
+        current_max_length = int(os.getenv('OLLAMA_MAX_CONTENT_LENGTH', '32000'))
+        
+        timeout_minutes = current_timeout // 60
+        timeout_seconds = current_timeout % 60
+        timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+        
         print(f"\n🤖 AI Settings")
         print("─" * 15)
-        print(f"Current Ollama Model: {OLLAMA_MODEL}")
-        print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"Current Ollama Model: {current_model}")
+        print(f"Auto Metadata: {'Yes' if current_metadata else 'No'}")
+        print(f"Ollama Timeout: {timeout_str}")
+        print(f"Max Content Length: {current_max_length:,} characters")
         print(f"\n1. Change Ollama Model")
         print(f"2. Toggle Auto Metadata")
-        print(f"3. ← Back to Main Menu")
+        print(f"3. Change Ollama Timeout")
+        print(f"4. Change Max Content Length")
+        print(f"5. ← Back to Main Menu")
         
-        choice = input("\n👉 Choose option (1-3): ").strip()
+        choice = input("\n👉 Choose option (1-5): ").strip()
         
         if choice == "1":
             print("\nSuggested Ollama Models:")
@@ -457,9 +379,51 @@ def ai_settings():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "3":
+            print(f"\nCurrent timeout: {current_timeout} seconds")
+            print("Recommended timeouts:")
+            print("  • 60s  - Fast models (gemma3:270m, qwen3:0.6b)")
+            print("  • 180s - Medium models (gemma3:4b, llama3)")  
+            print("  • 300s - Large models (llama3:70b)")
+            
+            new_timeout = input(f"Enter timeout in seconds (30-600) [current: {current_timeout}]: ").strip()
+            try:
+                timeout = int(new_timeout) if new_timeout else current_timeout
+                if 30 <= timeout <= 600:
+                    update_env_setting("OLLAMA_TIMEOUT", str(timeout))
+                    timeout_minutes = timeout // 60
+                    timeout_seconds = timeout % 60
+                    timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
+                    print(f"✅ Ollama timeout changed to: {timeout_str}")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Timeout must be between 30 and 600 seconds (10 minutes)")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "4":
+            print(f"\nCurrent max content length: {current_max_length:,} characters")
+            print("Recommended character limits:")
+            print("  • 8,000   - Conservative (original default)")
+            print("  • 32,000  - Balanced (new default)")
+            print("  • 64,000  - For powerful setups")
+            print("  • 128,000 - Maximum (requires robust hardware)")
+            
+            new_length = input(f"Enter max content length (1000-200000) [current: {current_max_length:,}]: ").strip()
+            try:
+                length = int(new_length.replace(',', '')) if new_length else current_max_length
+                if 1000 <= length <= 200000:
+                    update_env_setting("OLLAMA_MAX_CONTENT_LENGTH", str(length))
+                    print(f"✅ Max content length changed to: {length:,} characters")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Length must be between 1,000 and 200,000 characters")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
+        elif choice == "5":
             break
         else:
-            print("❌ Invalid choice. Please select 1-3.")
+            print("❌ Invalid choice. Please select 1-4.")
 
 def audio_settings():
     """Audio settings submenu"""
@@ -549,14 +513,92 @@ def advanced_performance_settings():
         else:
             print("❌ Invalid choice. Please select 1-3.")
 
+def setup_keyboard_handler():
+    """Set up terminal for non-blocking keyboard input."""
+    if sys.platform != "win32":  # Unix-like systems
+        try:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            tty.setraw(sys.stdin.fileno())
+            return fd, old_settings
+        except (OSError, termios.error):
+            # Terminal doesn't support raw mode (e.g., in some IDEs)
+            return None, None
+    return None, None
+
+def restore_keyboard_handler(fd, old_settings):
+    """Restore terminal settings."""
+    if fd is not None and old_settings is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+def check_keyboard_input(fd):
+    """Check for keyboard input without blocking."""
+    if sys.platform == "win32":
+        # Windows implementation (simplified)
+        try:
+            import msvcrt
+            return msvcrt.kbhit()
+        except ImportError:
+            # Fallback if msvcrt not available
+            return False
+    else:
+        # Unix-like systems
+        try:
+            return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+        except (OSError, ValueError):
+            # Fallback if select doesn't work (e.g., in some IDEs)
+            return False
+
+def get_keyboard_char():
+    """Get a keyboard character."""
+    if sys.platform == "win32":
+        try:
+            import msvcrt
+            return msvcrt.getch().decode('utf-8')
+        except ImportError:
+            return sys.stdin.readline().strip()
+    else:
+        return sys.stdin.read(1)
+
+# Global cancellation state - accessible from signal handler
+_global_recording_state = {
+    'recording_event': None,
+    'cancelled': None,
+    'original_handler': None
+}
+
+def _global_signal_handler(signum, frame):
+    """Global signal handler for Ctrl+C."""
+    try:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Recording cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Recording cancelled by user.")
+        
+        # Set global cancellation state
+        if _global_recording_state['cancelled']:
+            _global_recording_state['cancelled'].set()
+        if _global_recording_state['recording_event']:
+            _global_recording_state['recording_event'].clear()
+    except Exception:
+        # Ensure we always set the cancelled flag even if printing fails
+        if _global_recording_state['cancelled']:
+            _global_recording_state['cancelled'].set()
+        if _global_recording_state['recording_event']:
+            _global_recording_state['recording_event'].clear()
+
 def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
     """
     Records audio with real-time chunking and transcription.
     
     Returns:
-        str or None: Complete assembled transcript, or None if recording failed
+        str or None: Complete assembled transcript, or None if recording failed or cancelled
     """
-    print("🔴 Recording... Press Enter to stop.")
+    # Platform-specific messaging for keyboard shortcuts
+    if sys.platform == "darwin":  # macOS
+        print("🔴 Recording... Press Enter to stop, Ctrl+C (^C) to cancel.")
+    else:
+        print("🔴 Recording... Press Enter to stop, Ctrl+C to cancel.")
     
     # Initialize components
     chunker = AudioChunker(
@@ -565,36 +607,69 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         sample_rate=SAMPLE_RATE
     )
     
-    # Load Whisper model
-    print("🤫 Loading Whisper model...")
-    whisper_model = whisper.load_model(WHISPER_MODEL)
+    # Load Whisper model with clean interruption handling
+    try:
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Loading cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Loading cancelled by user.")
+        return None
+    except Exception as e:
+        print(f"\n❌ Error loading Whisper model: {e}")
+        return None
     
     # Initialize worker pool
-    worker_pool = TranscriptionWorkerPool(
-        whisper_model=whisper_model,
-        whisper_language=WHISPER_LANGUAGE,
-        num_workers=TRANSCRIPTION_WORKER_THREADS,
-        max_retry_attempts=MAX_RETRY_ATTEMPTS
-    )
-    
-    # Initialize VAD service
-    vad_service = VADService(
-        silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
-        chunk_duration_seconds=CHUNK_DURATION_SECONDS
-    )
+    try:
+        worker_pool = TranscriptionWorkerPool(
+            whisper_model=whisper_model,
+            whisper_language=WHISPER_LANGUAGE,
+            num_workers=TRANSCRIPTION_WORKER_THREADS,
+            max_retry_attempts=MAX_RETRY_ATTEMPTS
+        )
+        
+        # Initialize VAD service
+        vad_service = VADService(
+            silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
+            chunk_duration_seconds=CHUNK_DURATION_SECONDS
+        )
+    except KeyboardInterrupt:
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Initialization cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Initialization cancelled by user.")
+        return None
+    except Exception as e:
+        print(f"\n❌ Error during initialization: {e}")
+        return None
     
     # Threading control
     recording_event = threading.Event()
     recording_event.set()
     stop_event = threading.Event()
+    cancelled = threading.Event()
     
     # Audio data collection
     audio_data = []
     
+    # Keyboard handling setup
+    fd, old_settings = setup_keyboard_handler()
+    
+    # Set up global signal handler (only works in main thread)
+    try:
+        _global_recording_state['recording_event'] = recording_event
+        _global_recording_state['cancelled'] = cancelled
+        _global_recording_state['original_handler'] = signal.signal(signal.SIGINT, _global_signal_handler)
+        signal_handler_setup = True
+    except ValueError as e:
+        # Not in main thread - can't set up signal handler
+        print("⚠️  Note: Ctrl+C handling not available (not in main thread)")
+        signal_handler_setup = False
+    
     def audio_callback(indata, frames, time, status):
         """Callback for sounddevice audio stream."""
-        if status:
-            print(status, file=sys.stderr)
+        # Removed status printing that was causing spacing issues
         
         if recording_event.is_set():
             # Convert 2D array (channels x samples) to 1D array (samples)
@@ -623,6 +698,48 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
                 logging.error(f"Error processing chunks: {e}")
                 break
     
+    def keyboard_listener():
+        """Listen for keyboard input in a separate thread."""
+        try:
+            # Try advanced keyboard handling first
+            if fd is not None:
+                while recording_event.is_set() and not cancelled.is_set():
+                    if check_keyboard_input(fd):
+                        char = get_keyboard_char()
+                        if char == '\r' or char == '\n':  # Enter key
+                            print("✅ Recording stopped by user.")
+                            sys.stdout.flush()
+                            recording_event.clear()
+                            break
+                        elif ord(char) == 3:  # Ctrl+C (ASCII 3)
+                            print("🚫 Recording cancelled by user (Ctrl+C detected in keyboard listener).")
+                            cancelled.set()
+                            recording_event.clear()
+                            break
+                    threading.Event().wait(0.1)  # Small delay to prevent busy waiting
+            else:
+                # Fallback to simple input() for environments that don't support raw terminal
+                try:
+                    input()  # This will block until Enter is pressed
+                    if recording_event.is_set():  # Only stop if still recording
+                        print("✅ Recording stopped by user.")
+                        sys.stdout.flush()
+                        recording_event.clear()
+                except (EOFError, KeyboardInterrupt):
+                    if recording_event.is_set():
+                        print("🚫 Recording cancelled by user.")
+                        cancelled.set()
+                        recording_event.clear()
+        except KeyboardInterrupt:
+            # Backup Ctrl+C handling in keyboard listener
+            print("🚫 Recording cancelled by user (Ctrl+C in keyboard thread).")
+            cancelled.set()
+            recording_event.clear()
+        except Exception as e:
+            logging.error(f"Keyboard listener error: {e}")
+            # Final fallback - just wait for a bit and let other controls handle stopping
+            pass
+    
     try:
         # Start worker pool
         worker_pool.start()
@@ -632,19 +749,39 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
         chunk_thread.start()
         
+        # Start keyboard listener thread
+        keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
+        keyboard_thread.start()
+        
         # Start audio recording with configured device (or override)
         device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
         stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback, device=device)
         stream.start()
         
-        # Wait for user to press Enter
-        input()
+        # Wait for recording to be stopped (by Enter key, Ctrl+C, or other means)
+        try:
+            while recording_event.is_set() and not cancelled.is_set():
+                threading.Event().wait(0.05)  # Check more frequently
+        except KeyboardInterrupt:
+            # Backup Ctrl+C handling in case signal handler doesn't work
+            if sys.platform == "darwin":  # macOS
+                print("🚫 Recording cancelled by user (Ctrl+C).")
+            else:
+                print("🚫 Recording cancelled by user.")
+            cancelled.set()
+            recording_event.clear()
         
         # Stop recording
         stream.stop()
         stream.close()
         
-        print("\nRecording finished. Processing final chunk...")
+        # Brief pause to ensure audio stream cleanup is complete
+        time.sleep(0.1)
+        
+        # Check if recording was cancelled
+        if cancelled.is_set():
+            print("Recording cancelled. No file will be saved.")
+            return None
         
         # Stop recording
         recording_event.clear()
@@ -656,21 +793,54 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             vad_service.analyze_chunk(final_chunk)
         
         # Wait for all workers to finish
+        print()
         print("⏳ Finalizing transcription...")
-        worker_pool.stop()
-        vad_service.stop_recording()
+        
+        # Add timeout protection for cleanup phase
+        cleanup_start = time.time()
+        max_cleanup_time = 10.0  # 10 seconds max for cleanup
+        
+        # Stop worker pool with timeout to prevent hanging
+        try:
+            worker_pool.stop()
+        except Exception as e:
+            print(f"⚠️ Worker pool cleanup issue: {e}")
+        
+        # Check if cleanup is taking too long
+        if time.time() - cleanup_start > max_cleanup_time:
+            print("⚠️ Cleanup taking too long, forcing completion")
+            return "Cleanup timeout - recording may have been too short"
+        
+        try:
+            vad_service.stop_recording()
+        except Exception as e:
+            print(f"⚠️ VAD service cleanup issue: {e}")
         
         # Get assembled transcript
-        transcript = worker_pool.get_assembled_transcript()
+        try:
+            transcript = worker_pool.get_assembled_transcript()
+        except Exception as e:
+            print(f"⚠️ Transcript assembly issue: {e}")
+            transcript = ""
         
         # If no chunks were processed, fall back to transcribing the full audio
         if not transcript.strip() and audio_data:
-            full_audio = np.concatenate(audio_data, axis=0)
-            if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
-                result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
-            else:
-                result = whisper_model.transcribe(full_audio, fp16=False)
-            transcript = result["text"].strip()
+            try:
+                full_audio = np.concatenate(audio_data, axis=0)
+                
+                if len(full_audio) < 1600:  # Less than 0.1 seconds at 16kHz
+                    print("⚠️ Audio too short for transcription")
+                    return None
+                    
+                if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+                    result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
+                else:
+                    result = whisper_model.transcribe(full_audio, fp16=False)
+                transcript = result["text"].strip()
+                print("✅ Full audio transcription completed")
+            except Exception as e:
+                print(f"❌ Full audio transcription failed: {e}")
+                return None
         
         if not transcript.strip():
             print("No speech detected in the audio.")
@@ -687,6 +857,18 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     finally:
         # Ensure cleanup
         recording_event.clear()
+        
+        # Restore terminal settings
+        restore_keyboard_handler(fd, old_settings)
+        
+        # Restore original signal handler
+        if signal_handler_setup and _global_recording_state['original_handler']:
+            signal.signal(signal.SIGINT, _global_recording_state['original_handler'])
+            _global_recording_state['original_handler'] = None
+            _global_recording_state['recording_event'] = None
+            _global_recording_state['cancelled'] = None
+        
+        # Clean up components
         if 'worker_pool' in locals():
             worker_pool.stop()
         if 'vad_service' in locals():
@@ -714,111 +896,281 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
                 opener = "open" if sys.platform == "darwin" else "xdg-open"
                 subprocess.run([opener, full_path])
 
+def list_transcripts():
+    """List all available transcripts with their IDs."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        transcripts = file_manager.list_transcripts()
+        
+        # Also check for legacy format files (only in SAVE_PATH)
+        legacy_files = []
+        if os.path.exists(SAVE_PATH):
+            for filename in os.listdir(SAVE_PATH):
+                if (filename.endswith(('.md', '.txt')) and 
+                    TranscriptHeader.is_legacy_format_file(filename) and
+                    not TranscriptHeader.is_id_format_file(filename)):
+                    file_path = os.path.join(SAVE_PATH, filename)
+                    try:
+                        stat = os.stat(file_path)
+                        mod_time = datetime.fromtimestamp(stat.st_mtime)
+                        legacy_files.append((filename, mod_time))
+                    except OSError:
+                        continue
+        
+        # Sort legacy files by modification time (newest first)
+        legacy_files.sort(key=lambda x: x[1], reverse=True)
+        
+        if not transcripts and not legacy_files:
+            print("📝 No transcripts found.")
+            return
+        
+        print("\n📋 Available Transcripts:")
+        print("─" * 60)
+        
+        # Show new ID-format transcripts first
+        if transcripts:
+            print("🆔 New Format (ID-based):")
+            for transcript_id, filename, creation_date in transcripts:
+                date_str = creation_date.strftime("%Y-%m-%d %H:%M")
+                print(f"   {filename} (ID: {transcript_id}, {date_str})")
+            print()
+        
+        # Show legacy format transcripts
+        if legacy_files:
+            print("� Legacy Format (timestamp-based):")
+            for filename, mod_time in legacy_files:
+                date_str = mod_time.strftime("%Y-%m-%d %H:%M")
+                print(f"   {filename} ({date_str})")
+            print()
+        
+        if transcripts:
+            print(f"💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
+        print(f"💡 New transcripts use format: descriptive-name_DDMMYYYY_000001.{OUTPUT_FORMAT}")
+        
+    except Exception as e:
+        print(f"❌ Error listing transcripts: {e}")
+
+def show_transcript(id_reference):
+    """Show the content of a transcript by ID."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        content = file_manager.get_transcript_content(id_reference)
+        
+        if content:
+            print(f"\n📄 Transcript {id_reference}:")
+            print("─" * 50)
+            print(content)
+        else:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+        
+    except ValueError as e:
+        print(f"❌ {str(e)}")
+        print("💡 Please resolve the naming conflict - multiple files have the same ID")
+        print("💡 Use 'rec --list' to see all transcripts and their filenames")
+    except Exception as e:
+        print(f"❌ Error showing transcript: {e}")
+
+def append_to_transcript(id_reference):
+    """Record new audio and append to existing transcript."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript exists
+        try:
+            existing_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            print("💡 Please resolve the naming conflict - multiple files have the same ID")
+            print("💡 Use 'rec --list' to see all transcripts and their filenames")
+            return
+            
+        if not existing_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+            return
+        
+        clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+        print(f"🔗 Appending to transcript {clean_id}")
+        
+        # Show existing content preview
+        existing_content = file_manager.get_transcript_content(id_reference)
+        if existing_content:
+            preview = existing_content[:200] + "..." if len(existing_content) > 200 else existing_content
+            print(f"📄 Current content preview: {preview}")
+        
+        print("\n--- Recording additional content ---")
+        
+        # Record new audio
+        new_transcript = record_audio_chunked()
+        if not new_transcript:
+            print("❌ No new content recorded.")
+            return
+        
+        # Deduplicate the new content
+        new_transcript = deduplicate_transcript(new_transcript)
+        
+        print("\n--- NEW CONTENT ---")
+        print(new_transcript)
+        print("--------------------")
+        
+        # Append to existing transcript
+        updated_path = file_manager.append_to_transcript(id_reference, new_transcript)
+        
+        if updated_path:
+            print(f"✅ Successfully appended to transcript {clean_id}")
+            print(f"📁 Updated file: {updated_path}")
+            
+            # Copy combined content to clipboard if enabled
+            if AUTO_COPY:
+                combined_content = file_manager.get_transcript_content(id_reference)
+                if combined_content:
+                    pyperclip.copy(combined_content)
+                    print("📋 Combined transcript copied to clipboard.")
+        else:
+            print(f"❌ Failed to append to transcript {clean_id}")
+        
+    except Exception as e:
+        print(f"❌ Error appending to transcript: {e}")
+
+def summarize_file(path_or_id):
+    """Summarize and tag a file by path or transcript ID."""
+    try:
+        # Initialize summarization service
+        summarizer = SummarizationService(
+            ollama_model=OLLAMA_MODEL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+            notes_folder=SAVE_PATH,  # Use same folder as transcripts for processed files
+            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+        )
+        
+        # Determine if input is a file path or transcript ID
+        file_path = None
+        
+        if path_or_id.startswith('-') or path_or_id.isdigit():
+            # It's a transcript ID reference
+            file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+            
+            try:
+                file_path = file_manager.find_transcript(path_or_id)
+            except ValueError as e:
+                print(f"❌ {str(e)}")
+                print("💡 Please resolve the naming conflict - multiple files have the same ID")
+                print("💡 Use 'rec --list' to see all transcripts and their filenames")
+                return
+            
+            if not file_path:
+                print(f"❌ Transcript with ID '{path_or_id}' not found.")
+                print("💡 Use 'rec --list' to see available transcripts")
+                return
+            
+            print(f"🔍 Found transcript: {os.path.basename(file_path)}")
+        else:
+            # It's a file path
+            file_path = os.path.abspath(path_or_id)
+            if not os.path.exists(file_path):
+                print(f"❌ File not found: {file_path}")
+                return
+            
+            # Check if it's a text file
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in ['.md', '.txt', '']:
+                print(f"⚠️ File type '{ext}' may not be supported. Continuing anyway...")
+        
+        print(f"🤖 Summarizing file: {os.path.basename(file_path)}")
+        
+        # Check if this is a transcript file (don't copy to notes folder)
+        is_transcript_file = file_path.startswith(SAVE_PATH)
+        
+        # Summarize the file
+        success = summarizer.summarize_file(file_path, copy_to_notes=not is_transcript_file)
+        
+        if success:
+            print("🎉 Summarization completed successfully!")
+            
+            # Copy to clipboard if enabled
+            if AUTO_COPY and is_transcript_file:
+                # For transcript files, copy the updated content
+                file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+                # Extract ID from filename to get updated content
+                import re
+                id_match = re.search(r'_(\d+)\.(md|txt)$', file_path)
+                if id_match:
+                    transcript_id = id_match.group(1)
+                    updated_content = file_manager.get_transcript_content(transcript_id)
+                    if updated_content:
+                        pyperclip.copy(updated_content)
+                        print("📋 Updated transcript copied to clipboard.")
+        else:
+            print("❌ Summarization failed.")
+        
+    except Exception as e:
+        print(f"❌ Error during summarization: {e}")
+
 def main(args=None):
-    # Set defaults if no args provided
-    if args is None:
-        args = type('Args', (), {})()
-    
-    # 1. Record Audio with real-time chunking and transcription
-    device_override = args.device if hasattr(args, 'device') and args.device is not None else None
-    transcribed_text = record_audio_chunked(device_override)
-    if not transcribed_text:
+    try:
+        # Set defaults if no args provided
+        if args is None:
+            args = type('Args', (), {})()
+        
+        # 1. Record Audio with real-time chunking and transcription
+        device_override = args.device if hasattr(args, 'device') and args.device is not None else None
+        transcribed_text = record_audio_chunked(device_override)
+        if not transcribed_text:
+            return
+    except KeyboardInterrupt:
+        # Clean exit on Ctrl+C at any point in the main function
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Operation cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Operation cancelled by user.")
+        return
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")
         return
 
     # 2. Deduplicate transcript to remove any repetition from chunk overlap
     transcribed_text = deduplicate_transcript(transcribed_text)
 
-    print("\n--- TRANSCRIPT ---")
-    print(transcribed_text)
-    print("--------------------")
-
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
         pyperclip.copy(transcribed_text)
+        print()
         print("📋 Transcription copied to clipboard.")
 
-    # 4. Save file immediately with timestamp name
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    unique_id = str(uuid.uuid4())[:6]
-    temp_filename = f"{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
-    temp_path = os.path.join(SAVE_PATH, temp_filename)
+    # 4. Save transcript with default filename first, then let AI rename it
+    file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
     
-    # Create basic content
-    templates = load_templates()
-    now = datetime.now()
-    created_date = now.strftime("%Y-%m-%d")
-    created_time = now.strftime("%H:%M")
-    
-    template_key = f"{OUTPUT_FORMAT}_template"
-    if template_key in templates:
-        content = templates[template_key].format(
-            created_date=created_date,
-            created_time=created_time,
-            summary="[Summary will be generated if requested]",
-            transcription=transcribed_text,
-            tags_section="\n  - voice-note",
-            tags_inline="voice-note"
+    try:
+        file_path, transcript_id = file_manager.create_new_transcript(
+            transcribed_text, 
+            "transcript"  # Use default name initially
         )
-    else:
-        # Fallback to simple format
-        content = f"# Transcription: {now.strftime('%d %B %Y, %H:%M')}\n\n{transcribed_text}"
-    
-    # Save immediately
-    with open(temp_path, "w") as f:
-        f.write(content)
-    print(f"✅ Successfully saved transcript to: {temp_path}")
+        print(f"✅ Transcript {transcript_id} successfully saved")
+    except Exception as e:
+        print(f"❌ Error saving transcript: {e}")
+        return
 
-    # 4. Generate metadata and rename file (if Ollama available)
-    ollama_available = check_ollama_available()
-    final_path = temp_path  # Default to temp path
-    
-    if ollama_available:
-        metadata = get_combined_metadata_from_llm(transcribed_text)
-        
-        if metadata:
-            # Create final filename with unique ID preserved
-            final_filename = f"{metadata['filename']}_{timestamp}_{unique_id}.{OUTPUT_FORMAT}"
-            final_path = os.path.join(SAVE_PATH, final_filename)
-            
-            # Rename file
-            os.rename(temp_path, final_path)
-            
-            # Update file with metadata
-            try:
-                with open(final_path, "r") as f:
-                    current_content = f.read()
-                
-                # Replace summary
-                updated_content = current_content.replace(
-                    "[Summary will be generated if requested]", 
-                    metadata['summary']
-                )
-                
-                # Add tags
-                if metadata['tags']:
-                    tags_to_add = "\n".join([f"  - {tag}" for tag in metadata['tags']])
-                    updated_content = updated_content.replace(
-                        "tags:\n  - voice-note",
-                        f"tags:\n  - voice-note\n{tags_to_add}"
-                    )
-                
-                with open(final_path, "w") as f:
-                    f.write(updated_content)
-                
-                print(f"📝 Summary: {metadata['summary']}")
-                if metadata['tags']:
-                    print(f"🏷️  Tags: {', '.join(metadata['tags'])}")
-                print(f"✅ File renamed to: {final_path}")
-                
-            except Exception as e:
-                print(f"⚠️ Error updating file with metadata: {e}")
+    # 5. Add AI-generated summary, tags, and proper filename (if enabled)
+    if AUTO_METADATA:
+        print("🤖 Generating summary and tags...")
+        summarizer = SummarizationService(
+            ollama_model=OLLAMA_MODEL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+        )
+        if summarizer.check_ollama_available():
+            success = summarizer.summarize_file(file_path, copy_to_notes=False)
+            if success:
+                print("✅ Summary and tags added to transcript metadata")
+            else:
+                print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
-            print("⚠️ Could not generate metadata, keeping original filename")
-    else:
-        print("ℹ️  Ollama not available - keeping timestamp filename")
+            print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
-    # 5. Handle post-transcription actions
-    handle_post_transcription_actions(transcribed_text, final_path, ollama_available, args)
+    # 6. Handle post-transcription actions
+    summarizer_for_check = SummarizationService(ollama_model=OLLAMA_MODEL)
+    handle_post_transcription_actions(transcribed_text, file_path, summarizer_for_check.check_ollama_available(), args)
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -839,15 +1191,42 @@ if __name__ == "__main__":
                        help='Do not generate AI summary and tags')
     parser.add_argument('--device', type=int, 
                        help='Override default mic device for this recording')
+    parser.add_argument('id_reference', nargs='?', 
+                       help='Reference existing transcript by ID (e.g., -123456)')
+    parser.add_argument('-l', '--list', action='store_true',
+                       help='List all transcripts with their IDs')
+    parser.add_argument('-v', '--view', type=str, metavar='ID', dest='show',
+                       help='Show content of transcript by ID')
+    parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
+                       help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
     
     args = parser.parse_args()
     
-    if not all([SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL, OLLAMA_MODEL]):
-        print("❌ Configuration is missing. Please run the setup.sh script first.")
-    elif args.settings:
-        settings_menu()
-    else:
-        main(args)
+    try:
+        if not all([SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL, OLLAMA_MODEL]):
+            print("❌ Configuration is missing. Please run the setup.sh script first.")
+        elif args.settings:
+            settings_menu()
+        elif args.list:
+            list_transcripts()
+        elif args.show:
+            show_transcript(args.show)
+        elif args.summarize:
+            summarize_file(args.summarize)
+        elif args.id_reference:
+            append_to_transcript(args.id_reference)
+        else:
+            main(args)
+    except KeyboardInterrupt:
+        # Clean exit on Ctrl+C at the script level
+        if sys.platform == "darwin":  # macOS
+            print("\n🚫 Script cancelled by user (Ctrl+C).")
+        else:
+            print("\n🚫 Script cancelled by user.")
+        sys.exit(130)  # Standard exit code for Ctrl+C
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        sys.exit(1)
