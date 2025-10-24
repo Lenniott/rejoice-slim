@@ -80,10 +80,9 @@ rec --list            # Show all transcripts with their IDs
 rec --show 000042     # Display content of transcript 000042
 ```
 
-### Legacy Commands (Still Available)
+### Additional Commands
 ```bash
-rec-settings          # Configure settings (alternative to --settings)
-open-transcripts      # Opens your transcripts folder in Finder/Explorer
+rec -o                # Opens your transcripts folder in Finder/Explorer
 ```
 
 ## 📝 Understanding Output
@@ -123,7 +122,7 @@ Older transcripts may have the previous format with tags, summaries, and AI meta
 - **Pause between thoughts** - Helps with natural sentence breaks
 
 ### For Obsidian Users
-- **Set save path to your vault** - During setup or with `rec-settings`
+- **Set save path to your vault** - During setup or with `rec -s`
 - **Use AI tags** - They automatically link to other notes
 - **Enable auto-metadata** - Summaries help with note organization
 - **Choose Markdown format** - Better integration with Obsidian features
@@ -321,7 +320,7 @@ For large transcripts (3000+ characters), the AI uses advanced hierarchical proc
 - Test microphone in other apps first
 
 ### "Transcription is slow"
-- Use a smaller Whisper model: `rec-settings` → choose 'tiny' or 'base'
+- Use a smaller Whisper model: `rec -s` → choose 'tiny' or 'base'
 - Check available RAM (larger models need more memory)
 - Close other resource-intensive applications
 
@@ -360,7 +359,7 @@ rec --genai 000042         # Same as -g (long form)
 ```bash  
 rec --list                 # List all transcripts (long form)
 rec --view 000042          # View content (long form)
-open-transcripts           # Open transcripts folder
+rec -o                     # Open transcripts folder
 ```
 
 ### Advanced Options

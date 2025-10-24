@@ -6,7 +6,7 @@
 
 Access settings anytime with:
 ```bash
-rec-settings
+rec -s
 ```
 
 This opens an interactive menu to configure all aspects of Rejoice.
@@ -18,6 +18,7 @@ This opens an interactive menu to configure all aspects of Rejoice.
 - **Default:** `rec`
 - **Examples:** `record`, `transcribe`, `voice`, `tr`
 - **Why change it:** Avoid conflicts with other commands
+- **How to change:** `rec -s` → Command → Change Command Name
 
 ### 📁 Save Path
 - **What it is:** Where your transcript files are saved
@@ -219,6 +220,36 @@ Edit `templates.json` to customize output format:
 }
 ```
 
+## 🔧 Command Settings
+
+### Change Your Command Name
+You can change the command from `rec` to anything you prefer:
+
+```bash
+rec -s                    # Open settings
+# Choose: 6. Command → 1. Change Command Name
+# Enter new name: record, transcribe, voice, etc.
+```
+
+**Examples:**
+- `record` - More descriptive
+- `transcribe` - Clear purpose  
+- `voice` - Short and memorable
+- `tr` - Very short
+- `notes` - For note-taking workflow
+
+**What happens:**
+- Updates your `~/.zshrc` file automatically
+- Creates backup of old `.zshrc` 
+- Old command stops working immediately
+- New command works after `source ~/.zshrc`
+
+**Safety features:**
+- Won't overwrite existing commands
+- Creates backup before changes
+- Shows current command name
+- Validates new command name
+
 ## 🔧 Environment Variables
 
 Advanced users can set environment variables in `.env`:
@@ -270,11 +301,12 @@ cp .env .env.backup
 ### "Settings not saving"
 - Check file permissions in the project directory
 - Ensure `.env` file is writable
-- Try running `rec-settings` as your user (not sudo)
+- Try running `rec -s` as your user (not sudo)
 
 ### "Command not found after changing alias"
 - Restart terminal: `source ~/.zshrc`
 - Or use full path: `python /path/to/rejoice/src/transcribe.py`
+- Or run uninstall: `rec -s` → Uninstall → Run Uninstall
 
 ### "AI features stopped working"
 - Check Ollama: `ollama list`

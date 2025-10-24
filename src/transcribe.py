@@ -181,9 +181,11 @@ def settings_menu():
             print("  3. 🤖 AI (Ollama model, auto-metadata)")
             print("  4. 🎤 Audio (Microphone device)")
             print("  5. ⚡ Performance (Chunking, auto-stop)")
-            print("  6. 🚪 Exit")
+            print("  6. 🔧 Command (Change command name)")
+            print("  7. 🗑️  Uninstall (Remove aliases, venv, and config)")
+            print("  8. 🚪 Exit")
             
-            choice = input("\n👉 Choose a category (1-6): ").strip()
+            choice = input("\n👉 Choose a category (1-8): ").strip()
             
             if choice == "1":
                 transcription_settings()
@@ -196,10 +198,14 @@ def settings_menu():
             elif choice == "5":
                 advanced_performance_settings()
             elif choice == "6":
+                command_settings()
+            elif choice == "7":
+                uninstall_settings()
+            elif choice == "8":
                 print("👋 Exiting settings...")
                 break
             else:
-                print("❌ Invalid choice. Please select 1-6.")
+                print("❌ Invalid choice. Please select 1-8.")
     except KeyboardInterrupt:
         if sys.platform == "darwin":  # macOS
             print("\n\n👋 Settings menu cancelled by user (Ctrl+C).")
@@ -512,6 +518,142 @@ def advanced_performance_settings():
             break
         else:
             print("❌ Invalid choice. Please select 1-3.")
+
+def command_settings():
+    """Command settings submenu"""
+    while True:
+        # Read current command name
+        current_command = os.getenv('COMMAND_NAME', 'rec')
+        
+        print(f"\n🔧 Command Settings")
+        print("─" * 20)
+        print(f"Current command: {current_command}")
+        print(f"Usage: {current_command} (start recording)")
+        print(f"Usage: {current_command} -s (settings)")
+        print(f"Usage: {current_command} -l (list transcripts)")
+        print(f"\n1. Change Command Name")
+        print(f"2. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-2): ").strip()
+        
+        if choice == "1":
+            print(f"\nCurrent command: {current_command}")
+            print("Examples: rec, record, transcribe, voice, tr, etc.")
+            print("Choose something that won't conflict with existing commands.")
+            
+            new_command = input("Enter new command name: ").strip()
+            
+            if new_command and new_command != current_command:
+                # Update the .env file
+                update_env_setting("COMMAND_NAME", new_command)
+                
+                # Update the alias in ~/.zshrc
+                try:
+                    # Get project directory and venv python path
+                    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    venv_python = os.path.join(project_dir, 'venv', 'bin', 'python')
+                    
+                    # Remove old alias and add new one
+                    if os.path.exists(os.path.expanduser("~/.zshrc")):
+                        # Create backup
+                        import shutil
+                        shutil.copy(os.path.expanduser("~/.zshrc"), os.path.expanduser("~/.zshrc.backup"))
+                        
+                        # Remove old section and add new alias
+                        with open(os.path.expanduser("~/.zshrc"), 'r') as f:
+                            lines = f.readlines()
+                        
+                        # Find and remove the old section
+                        new_lines = []
+                        in_section = False
+                        for line in lines:
+                            if line.strip() == "# Added by Local Transcriber Setup":
+                                in_section = True
+                                continue
+                            elif in_section and (line.strip() == "" or line.startswith("#") and not line.startswith("# Added by")):
+                                in_section = False
+                            
+                            if not in_section:
+                                new_lines.append(line)
+                        
+                        # Add new alias
+                        new_lines.append("\n# Added by Local Transcriber Setup\n")
+                        new_lines.append(f"alias {new_command}='{venv_python} {project_dir}/src/transcribe.py'\n")
+                        
+                        # Write back to file
+                        with open(os.path.expanduser("~/.zshrc"), 'w') as f:
+                            f.writelines(new_lines)
+                        
+                        print(f"✅ Command changed from '{current_command}' to '{new_command}'")
+                        print(f"🔄 Please restart your terminal or run 'source ~/.zshrc' to use the new command")
+                        print(f"💡 Your old command '{current_command}' will no longer work")
+                        
+                    else:
+                        print("❌ Could not find ~/.zshrc file")
+                        
+                except Exception as e:
+                    print(f"❌ Error updating alias: {e}")
+                    print("💡 You may need to manually update your ~/.zshrc file")
+            elif new_command == current_command:
+                print("ℹ️  Command name is already set to that value")
+            else:
+                print("❌ Invalid command name")
+        
+        elif choice == "2":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-2.")
+
+def uninstall_settings():
+    """Uninstall settings submenu"""
+    while True:
+        print(f"\n🗑️  Uninstall Settings")
+        print("─" * 25)
+        print("This will remove:")
+        print("  • Shell aliases from ~/.zshrc")
+        print("  • Python virtual environment (venv/)")
+        print("  • Configuration file (.env)")
+        print("  • Optionally remove transcripts")
+        print(f"\n1. Run Uninstall")
+        print(f"2. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-2): ").strip()
+        
+        if choice == "1":
+            print("\n⚠️  This will completely remove the Local Transcriber installation.")
+            confirm = input("Are you sure you want to continue? (y/N): ").strip().lower()
+            
+            if confirm in ['y', 'yes']:
+                # Get the project directory
+                project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                uninstall_script = os.path.join(project_dir, 'uninstall.sh')
+                
+                if os.path.exists(uninstall_script):
+                    print(f"🚀 Running uninstall script...")
+                    try:
+                        import subprocess
+                        result = subprocess.run(['bash', uninstall_script], cwd=project_dir)
+                        if result.returncode == 0:
+                            print("✅ Uninstall completed successfully!")
+                            print("👋 Thank you for using Local Transcriber!")
+                            sys.exit(0)
+                        else:
+                            print("❌ Uninstall script failed")
+                    except Exception as e:
+                        print(f"❌ Error running uninstall script: {e}")
+                else:
+                    print(f"❌ Uninstall script not found at: {uninstall_script}")
+                    print("💡 You can manually remove:")
+                    print(f"  • Aliases from ~/.zshrc")
+                    print(f"  • Virtual environment: {project_dir}/venv/")
+                    print(f"  • Configuration: {project_dir}/.env")
+            else:
+                print("❌ Uninstall cancelled")
+        
+        elif choice == "2":
+            break
+        else:
+            print("❌ Invalid choice. Please select 1-2.")
 
 def setup_keyboard_handler():
     """Set up terminal for non-blocking keyboard input."""
@@ -896,6 +1038,30 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
                 opener = "open" if sys.platform == "darwin" else "xdg-open"
                 subprocess.run([opener, full_path])
 
+def open_transcripts_folder():
+    """Open the transcripts folder in Finder/Explorer."""
+    try:
+        if not SAVE_PATH or not os.path.exists(SAVE_PATH):
+            print(f"❌ Transcripts folder not found: {SAVE_PATH}")
+            print("💡 Run 'rec -s' to configure the save path")
+            return
+        
+        if sys.platform == "darwin":  # macOS
+            subprocess.run(["open", SAVE_PATH])
+        elif sys.platform == "linux":  # Linux
+            subprocess.run(["xdg-open", SAVE_PATH])
+        elif sys.platform == "win32":  # Windows
+            subprocess.run(["explorer", SAVE_PATH])
+        else:
+            print(f"📁 Transcripts folder: {SAVE_PATH}")
+            return
+        
+        print(f"📂 Opened transcripts folder: {SAVE_PATH}")
+        
+    except Exception as e:
+        print(f"❌ Error opening transcripts folder: {e}")
+        print(f"📁 Transcripts folder location: {SAVE_PATH}")
+
 def list_transcripts():
     """List all available transcripts with their IDs."""
     try:
@@ -1199,6 +1365,8 @@ if __name__ == "__main__":
                        help='Show content of transcript by ID')
     parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
                        help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
+    parser.add_argument('-o', '--open-folder', action='store_true',
+                       help='Open the transcripts folder in Finder/Explorer')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1218,6 +1386,8 @@ if __name__ == "__main__":
             summarize_file(args.summarize)
         elif args.id_reference:
             append_to_transcript(args.id_reference)
+        elif args.open_folder:
+            open_transcripts_folder()
         else:
             main(args)
     except KeyboardInterrupt:

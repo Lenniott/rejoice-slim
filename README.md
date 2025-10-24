@@ -44,6 +44,7 @@ rec -000001                      # Append to existing transcript by ID
 rec -l                           # Show all transcripts with their IDs
 rec -v 000001                    # View content of transcript by ID (id is the last number on the filename)
 rec -g 000001                    # AI analysis: extract themes, questions, actions
+rec -o                           # Open transcripts folder
 rec -s                           # Configure settings
 ```
 

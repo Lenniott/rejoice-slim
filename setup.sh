@@ -71,15 +71,17 @@ if [ -f ".env" ]; then
         # Remove any existing Local Transcriber Setup section from .zshrc
         if [ -f ~/.zshrc ]; then
             # Create a temporary file without the old setup section
+            # This handles both old functions and old aliases
             awk '
             /^# Added by Local Transcriber Setup/ {
                 in_section = 1
                 next
             }
-            /^# [^A]/ && in_section {
-                in_section = 0
-            }
             /^$/ && in_section {
+                in_section = 0
+                next
+            }
+            /^# [^A]/ && in_section {
                 in_section = 0
             }
             !in_section {
@@ -88,23 +90,12 @@ if [ -f ".env" ]; then
             ' ~/.zshrc > ~/.zshrc.tmp && mv ~/.zshrc.tmp ~/.zshrc
         fi
         
-        # Add fresh aliases with dynamic path resolution
+        # Add fresh simple aliases
         echo -e "\n# Added by Local Transcriber Setup" >> ~/.zshrc
-        echo "$COMMAND_NAME() {" >> ~/.zshrc
-        echo "    local script_dir=\"\$(dirname \"\$(readlink -f \"\$0\" 2>/dev/null || echo \"\$0\")\")\"" >> ~/.zshrc
-        echo "    local project_dir=\"$PROJECT_DIR\"" >> ~/.zshrc
-        echo "    \"\$project_dir/venv/bin/python\" \"\$project_dir/src/transcribe.py\" \"\$@\"" >> ~/.zshrc
-        echo "}" >> ~/.zshrc
-        echo "$COMMAND_NAME-settings() {" >> ~/.zshrc
-        echo "    local project_dir=\"$PROJECT_DIR\"" >> ~/.zshrc
-        echo "    \"\$project_dir/venv/bin/python\" \"\$project_dir/src/transcribe.py\" --settings \"\$@\"" >> ~/.zshrc
-        echo "}" >> ~/.zshrc
+        echo "alias $COMMAND_NAME='$VENV_PYTHON $PROJECT_DIR/src/transcribe.py'" >> ~/.zshrc
         
-        # Create the open-transcripts alias as well
-        SAVE_PATH=$(grep "^SAVE_PATH=" .env | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-        echo "alias open-transcripts='open \"$SAVE_PATH\"'" >> ~/.zshrc
-        
-        echo "✅ Created aliases '$COMMAND_NAME', '$COMMAND_NAME-settings' and 'open-transcripts' that use the virtual environment"
+        echo "✅ Created alias '$COMMAND_NAME' that uses the virtual environment"
+        echo "💡 Use '$COMMAND_NAME -o' to open the transcripts folder"
     else
         echo "❌ Could not find COMMAND_NAME in .env file"
         exit 1
