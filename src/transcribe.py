@@ -16,6 +16,10 @@ import time
 from scipy.io.wavfile import write
 from datetime import datetime
 from dotenv import load_dotenv
+import tempfile
+import shutil
+import wave
+from pathlib import Path
 import pyperclip
 import tempfile
 import argparse
@@ -709,6 +713,96 @@ _global_recording_state = {
     'original_handler': None
 }
 
+# Session management helper functions
+def cleanup_session_file(audio_writer, session_file):
+    """Clean up session file and writer"""
+    if audio_writer:
+        try:
+            audio_writer.close()
+        except:
+            pass
+    
+    try:
+        if session_file.exists():
+            session_file.unlink()
+    except:
+        pass
+
+def preserve_session_for_recovery(session_file, session_id, reason):
+    """Preserve session file for recovery"""
+    if not session_file.exists():
+        return
+    
+    file_size = session_file.stat().st_size
+    duration = file_size / (SAMPLE_RATE * 2) if file_size > 0 else 0
+    
+    print(f"💾 Audio session preserved: {session_file.name}")
+    print(f"📊 Duration: {duration:.1f}s, Size: {file_size/1024/1024:.1f}MB")
+    print(f"🔧 Reason: {reason}")
+    print(f"🔄 Recover with: python transcribe.py --recover {session_id}")
+
+def transcribe_session_file(session_file, whisper_model):
+    """Transcribe a complete session file"""
+    try:
+        # Read WAV file directly using wave module
+        with wave.open(str(session_file), 'rb') as wav_file:
+            frames = wav_file.readframes(-1)
+            sample_rate = wav_file.getframerate()
+            n_channels = wav_file.getnchannels()
+            
+        # Convert bytes to numpy array
+        audio_data = np.frombuffer(frames, dtype=np.int16)
+        
+        # Convert to float32 normalized to [-1, 1]
+        audio_data = audio_data.astype(np.float32) / 32767.0
+        
+        # Handle stereo to mono conversion if needed
+        if n_channels > 1:
+            audio_data = audio_data.reshape(-1, n_channels).mean(axis=1)
+        
+        if len(audio_data) < 1600:  # Less than 0.1 seconds
+            return None
+        
+        # Resample if needed (Whisper expects 16kHz)
+        if sample_rate != SAMPLE_RATE:
+            # Simple resampling - for production use scipy.signal.resample
+            ratio = SAMPLE_RATE / sample_rate
+            new_length = int(len(audio_data) * ratio)
+            audio_data = np.interp(
+                np.linspace(0, len(audio_data), new_length),
+                np.arange(len(audio_data)),
+                audio_data
+            )
+        
+        if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+            result = whisper_model.transcribe(audio_data, fp16=False, language=WHISPER_LANGUAGE)
+        else:
+            result = whisper_model.transcribe(audio_data, fp16=False)
+        
+        return result["text"]
+        
+    except Exception as e:
+        print(f"❌ Session transcription failed: {e}")
+        return None
+
+def maintain_realtime_buffer(audio_buffer, max_seconds=30):
+    """Keep realtime buffer under size limit"""
+    max_samples = max_seconds * SAMPLE_RATE
+    current_samples = sum(len(chunk) for chunk in audio_buffer)
+    
+    while current_samples > max_samples and len(audio_buffer) > 1:
+        removed = audio_buffer.pop(0)
+        current_samples -= len(removed)
+
+def cleanup_services_with_timeout(worker_pool, vad_service, timeout=2.0):
+    """Cleanup services with timeout protection"""
+    try:
+        stop_thread = threading.Thread(target=lambda: (worker_pool.stop(), vad_service.stop_recording()))
+        stop_thread.start()
+        stop_thread.join(timeout=timeout)
+    except:
+        pass
+
 def _global_signal_handler(signum, frame):
     """Global signal handler for Ctrl+C."""
     try:
@@ -731,16 +825,40 @@ def _global_signal_handler(signum, frame):
 
 def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
     """
-    Records audio with real-time chunking and transcription.
-    
-    Returns:
-        str or None: Complete assembled transcript, or None if recording failed or cancelled
+    Records audio with lossless recovery - audio preserved only on failure.
+    Success = audio deleted, failure = audio preserved for recovery.
     """
+    # Create session-based temp file
+    temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
+    temp_audio_dir.mkdir(exist_ok=True)
+    
+    session_id = int(time.time())
+    session_audio_file = temp_audio_dir / f"session_{session_id}.wav"
+    
     # Platform-specific messaging for keyboard shortcuts
     if sys.platform == "darwin":  # macOS
         print("🔴 Recording... Press Enter to stop, Ctrl+C (^C) to cancel.")
     else:
         print("🔴 Recording... Press Enter to stop, Ctrl+C to cancel.")
+    
+    # Audio file writer for continuous saving
+    audio_writer = None
+    total_frames_written = 0
+    
+    def initialize_audio_writer():
+        nonlocal audio_writer
+        try:
+            audio_writer = wave.open(str(session_audio_file), 'wb')
+            audio_writer.setnchannels(1)
+            audio_writer.setsampwidth(2)
+            audio_writer.setframerate(SAMPLE_RATE)
+            return True
+        except Exception as e:
+            print(f"❌ Failed to initialize audio session: {e}")
+            return False
+    
+    if not initialize_audio_writer():
+        return None
     
     # Initialize components
     chunker = AudioChunker(
@@ -757,9 +875,11 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             print("\n🚫 Loading cancelled by user (Ctrl+C).")
         else:
             print("\n🚫 Loading cancelled by user.")
+        cleanup_session_file(audio_writer, session_audio_file)
         return None
     except Exception as e:
         print(f"\n❌ Error loading Whisper model: {e}")
+        cleanup_session_file(audio_writer, session_audio_file)
         return None
     
     # Initialize worker pool
@@ -781,19 +901,18 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             print("\n🚫 Initialization cancelled by user (Ctrl+C).")
         else:
             print("\n🚫 Initialization cancelled by user.")
+        cleanup_session_file(audio_writer, session_audio_file)
         return None
     except Exception as e:
         print(f"\n❌ Error during initialization: {e}")
+        cleanup_session_file(audio_writer, session_audio_file)
         return None
     
     # Threading control
     recording_event = threading.Event()
     recording_event.set()
-    stop_event = threading.Event()
     cancelled = threading.Event()
-    
-    # Audio data collection
-    audio_data = []
+    audio_data_for_realtime = []
     
     # Keyboard handling setup
     fd, old_settings = setup_keyboard_handler()
@@ -810,14 +929,30 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         signal_handler_setup = False
     
     def audio_callback(indata, frames, time, status):
-        """Callback for sounddevice audio stream."""
-        # Removed status printing that was causing spacing issues
+        """Stream audio to disk immediately + keep small realtime buffer"""
+        nonlocal total_frames_written
         
-        if recording_event.is_set():
-            # Convert 2D array (channels x samples) to 1D array (samples)
-            audio_1d = indata.flatten()
-            audio_data.append(audio_1d.copy())
-            chunker.add_audio_data(audio_1d.copy())
+        if recording_event.is_set() and audio_writer:
+            try:
+                # Write to disk immediately for lossless guarantee
+                audio_1d = indata.flatten()
+                audio_16bit = (audio_1d * 32767).astype(np.int16)
+                
+                audio_writer.writeframes(audio_16bit.tobytes())
+                audio_writer._file.flush()
+                os.fsync(audio_writer._file.fileno())
+                
+                total_frames_written += len(audio_16bit)
+                
+                # Maintain small buffer for realtime processing
+                audio_data_for_realtime.append(audio_1d.copy())
+                maintain_realtime_buffer(audio_data_for_realtime)
+                
+                # Add to chunker for realtime feedback
+                chunker.add_audio_data(audio_1d.copy())
+                
+            except Exception as e:
+                print(f"⚠️ Audio write error: {e}")
     
     def process_ready_chunks():
         """Process chunks as they become available."""
@@ -825,14 +960,13 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             try:
                 chunks_processed = 0
                 for chunk in chunker.get_ready_chunks():
-                    # Send to transcription workers
-                    worker_pool.add_chunk(chunk)
-                    chunks_processed += 1
-                    
-                    # Send to VAD service
-                    vad_service.analyze_chunk(chunk)
-                
-                # Chunk processing happens silently in background
+                    if not cancelled.is_set():
+                        # Send to transcription workers
+                        worker_pool.add_chunk(chunk)
+                        chunks_processed += 1
+                        
+                        # Send to VAD service
+                        vad_service.analyze_chunk(chunk)
                 
                 # Small delay to prevent busy waiting
                 threading.Event().wait(0.1)
@@ -879,8 +1013,10 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             recording_event.clear()
         except Exception as e:
             logging.error(f"Keyboard listener error: {e}")
-            # Final fallback - just wait for a bit and let other controls handle stopping
             pass
+    
+    success = False
+    transcript = None
     
     try:
         # Start worker pool
@@ -917,88 +1053,51 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         stream.stop()
         stream.close()
         
+        # Close audio writer
+        if audio_writer:
+            audio_writer.close()
+            audio_writer = None
+        
         # Brief pause to ensure audio stream cleanup is complete
         time.sleep(0.1)
         
-        # Check if recording was cancelled
+        # Check results
         if cancelled.is_set():
-            print("Recording cancelled. No file will be saved.")
+            print("🚫 Recording cancelled.")
+            preserve_session_for_recovery(session_audio_file, session_id, "cancelled")
             return None
         
-        # Stop recording
-        recording_event.clear()
+        if total_frames_written == 0:
+            print("⚠️ No audio recorded")
+            cleanup_session_file(None, session_audio_file)
+            return None
         
-        # Process final partial chunk
-        final_chunk = chunker.get_final_chunk()
-        if final_chunk is not None:
-            worker_pool.add_chunk(final_chunk)
-            vad_service.analyze_chunk(final_chunk)
-        
-        # Wait for all workers to finish
+        # Transcribe complete audio
         print()
-        print("⏳ Finalizing transcription...")
+        print("⏳ Transcribing complete recording...")
+        transcript = transcribe_session_file(session_audio_file, whisper_model)
         
-        # Add timeout protection for cleanup phase
-        cleanup_start = time.time()
-        max_cleanup_time = 10.0  # 10 seconds max for cleanup
-        
-        # Stop worker pool with timeout to prevent hanging
-        try:
-            worker_pool.stop()
-        except Exception as e:
-            print(f"⚠️ Worker pool cleanup issue: {e}")
-        
-        # Check if cleanup is taking too long
-        if time.time() - cleanup_start > max_cleanup_time:
-            print("⚠️ Cleanup taking too long, forcing completion")
-            return "Cleanup timeout - recording may have been too short"
-        
-        try:
-            vad_service.stop_recording()
-        except Exception as e:
-            print(f"⚠️ VAD service cleanup issue: {e}")
-        
-        # Get assembled transcript
-        try:
-            transcript = worker_pool.get_assembled_transcript()
-        except Exception as e:
-            print(f"⚠️ Transcript assembly issue: {e}")
-            transcript = ""
-        
-        # If no chunks were processed, fall back to transcribing the full audio
-        if not transcript.strip() and audio_data:
-            try:
-                full_audio = np.concatenate(audio_data, axis=0)
-                
-                if len(full_audio) < 1600:  # Less than 0.1 seconds at 16kHz
-                    print("⚠️ Audio too short for transcription")
-                    return None
-                    
-                if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
-                    result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
-                else:
-                    result = whisper_model.transcribe(full_audio, fp16=False)
-                transcript = result["text"].strip()
-                print("✅ Full audio transcription completed")
-            except Exception as e:
-                print(f"❌ Full audio transcription failed: {e}")
-                return None
-        
-        if not transcript.strip():
-            print("No speech detected in the audio.")
+        if transcript and transcript.strip():
+            success = True
+            print("✅ Transcription completed successfully")
+            return transcript.strip()
+        else:
+            print("⚠️ No speech detected in recording")
+            preserve_session_for_recovery(session_audio_file, session_id, "no_speech")
             return None
-        
-        # Transcription complete - no need to show chunk statistics
-        
-        return transcript
         
     except Exception as e:
-        print(f"An error occurred during recording: {e}")
-        logging.error(f"Recording error: {e}")
+        print(f"❌ Recording error: {e}")
+        preserve_session_for_recovery(session_audio_file, session_id, "error")
         return None
+    
     finally:
-        # Ensure cleanup
-        recording_event.clear()
+        # Cleanup
+        if audio_writer:
+            try:
+                audio_writer.close()
+            except:
+                pass
         
         # Restore terminal settings
         restore_keyboard_handler(fd, old_settings)
@@ -1010,11 +1109,13 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             _global_recording_state['recording_event'] = None
             _global_recording_state['cancelled'] = None
         
-        # Clean up components
-        if 'worker_pool' in locals():
-            worker_pool.stop()
-        if 'vad_service' in locals():
-            vad_service.stop_recording()
+        # Stop services with timeout
+        cleanup_services_with_timeout(worker_pool, vad_service)
+        
+        # Clean up session file only on complete success
+        if success and transcript:
+            cleanup_session_file(None, session_audio_file)
+            print("🗑️ Temporary audio file cleaned up")
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle file opening based on settings"""
@@ -1273,6 +1374,92 @@ def summarize_file(path_or_id):
     except Exception as e:
         print(f"❌ Error during summarization: {e}")
 
+def list_recovery_sessions():
+    """List available recovery sessions"""
+    temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
+    
+    if not temp_audio_dir.exists():
+        print("No recovery sessions available")
+        return []
+    
+    session_files = list(temp_audio_dir.glob("session_*.wav"))
+    
+    if not session_files:
+        print("No recovery sessions available")
+        return []
+    
+    print(f"\n📋 Found {len(session_files)} recoverable sessions:")
+    
+    sessions = []
+    for session_file in sorted(session_files):
+        try:
+            session_id = session_file.stem.split('_')[1]
+            file_size = session_file.stat().st_size
+            duration = file_size / (SAMPLE_RATE * 2)  # 16-bit mono
+            timestamp = datetime.fromtimestamp(int(session_id))
+            
+            sessions.append({
+                'id': session_id,
+                'file': session_file,
+                'duration': duration,
+                'size_mb': file_size/1024/1024,
+                'timestamp': timestamp
+            })
+            
+            print(f"  {session_id}: {duration:.1f}s ({file_size/1024/1024:.1f}MB) - {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+        except Exception as e:
+            print(f"  ⚠️ Corrupted session: {session_file.name}")
+    
+    return sessions
+
+def recover_session(session_id_or_latest=None):
+    """Recover and transcribe a specific session"""
+    sessions = list_recovery_sessions()
+    
+    if not sessions:
+        return None
+    
+    # Find session
+    if session_id_or_latest is None or session_id_or_latest == "latest":
+        session = max(sessions, key=lambda s: s['timestamp'])
+        print(f"\n🔄 Recovering latest session: {session['id']}")
+    else:
+        session = next((s for s in sessions if s['id'] == str(session_id_or_latest)), None)
+        if not session:
+            print(f"❌ Session {session_id_or_latest} not found")
+            return None
+    
+    print(f"📁 Processing: {session['duration']:.1f}s recording from {session['timestamp'].strftime('%H:%M:%S')}")
+    
+    try:
+        # Load Whisper model
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+        
+        # Transcribe session
+        transcript = transcribe_session_file(session['file'], whisper_model)
+        
+        if transcript and transcript.strip():
+            # Save transcript normally
+            file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+            file_path, transcript_id = file_manager.create_new_transcript(transcript.strip(), "recovered_recording")
+            
+            print(f"✅ Recovery successful!")
+            print(f"📄 Transcript {transcript_id} saved: {file_path}")
+            
+            # Clean up session file after successful recovery
+            session['file'].unlink()
+            print(f"🗑️ Session file cleaned up")
+            
+            return transcript.strip()
+        else:
+            print("⚠️ No speech detected in recovered session")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Recovery failed: {e}")
+        return None
+
 def main(args=None):
     try:
         # Set defaults if no args provided
@@ -1367,6 +1554,10 @@ if __name__ == "__main__":
                        help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
     parser.add_argument('-o', '--open-folder', action='store_true',
                        help='Open the transcripts folder in Finder/Explorer')
+    parser.add_argument('-r', '--recover', nargs='?', const='latest', 
+                       help='Recover session by ID or "latest"')
+    parser.add_argument('-ls', '--list-sessions', action='store_true', 
+                       help='List recoverable sessions')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1388,6 +1579,10 @@ if __name__ == "__main__":
             append_to_transcript(args.id_reference)
         elif args.open_folder:
             open_transcripts_folder()
+        elif args.list_sessions:
+            list_recovery_sessions()
+        elif args.recover:
+            recover_session(args.recover)
         else:
             main(args)
     except KeyboardInterrupt:
