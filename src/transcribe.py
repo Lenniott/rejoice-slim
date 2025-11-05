@@ -794,12 +794,27 @@ def maintain_realtime_buffer(audio_buffer, max_seconds=30):
         removed = audio_buffer.pop(0)
         current_samples -= len(removed)
 
-def cleanup_services_with_timeout(worker_pool, vad_service, timeout=2.0):
-    """Cleanup services with timeout protection"""
+def cleanup_services_with_timeout(worker_pool, vad_service, timeout=1.0):
+    """Cleanup services with aggressive timeout protection"""
     try:
-        stop_thread = threading.Thread(target=lambda: (worker_pool.stop(), vad_service.stop_recording()))
+        def cleanup():
+            try:
+                if worker_pool:
+                    worker_pool.stop()
+            except:
+                pass
+            try:
+                if vad_service:
+                    vad_service.stop_recording()
+            except:
+                pass
+        
+        stop_thread = threading.Thread(target=cleanup)
         stop_thread.start()
         stop_thread.join(timeout=timeout)
+        
+        if stop_thread.is_alive():
+            print("⚠️ Service cleanup timed out (continuing anyway)")
     except:
         pass
 
@@ -877,9 +892,7 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     realtime_enabled = True
     
     try:
-        print("🎤 Loading Whisper model...")
         whisper_model = whisper.load_model(WHISPER_MODEL)
-        print("✅ Whisper model loaded")
     except KeyboardInterrupt:
         if sys.platform == "darwin":  # macOS
             print("\n🚫 Loading cancelled by user (Ctrl+C).")
@@ -912,7 +925,6 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             
             worker_pool.start()
             vad_service.start_recording()
-            print("✅ Real-time transcription enabled")
             
         except KeyboardInterrupt:
             if sys.platform == "darwin":  # macOS
@@ -983,33 +995,60 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     
     def process_ready_chunks():
         """Process chunks with error isolation and queuing"""
+        nonlocal realtime_enabled
+        
         if not realtime_enabled or not worker_pool:
             return
             
         while recording_event.is_set() and realtime_enabled:
             try:
                 ready_chunks = chunker.get_ready_chunks()
-                for chunk_data, chunk_id, timestamp in ready_chunks:
+                
+                for chunk_info in ready_chunks:
                     if not cancelled.is_set() and realtime_enabled:
-                        chunk_order.append(chunk_id)
-                        
-                        # Try immediate transcription
                         try:
-                            worker_pool.add_chunk((chunk_data, chunk_id, timestamp))
-                            if vad_service:
-                                vad_service.analyze_chunk(chunk_data)
-                            # Note: We'll check results at the end using get_assembled_transcript
-                                    
+                            # Handle different possible chunk formats from AudioChunker
+                            chunk_data = None
+                            chunk_id = None
+                            timestamp = time.time()
+                            
+                            if isinstance(chunk_info, tuple):
+                                # Flexible unpacking to handle different tuple sizes
+                                if len(chunk_info) >= 1:
+                                    chunk_data = chunk_info[0]
+                                if len(chunk_info) >= 2:
+                                    chunk_id = chunk_info[1]
+                                if len(chunk_info) >= 3:
+                                    timestamp = chunk_info[2]
+                            else:
+                                # Assume it's raw chunk data
+                                chunk_data = chunk_info
+                            
+                            # Generate chunk_id if not provided
+                            if chunk_id is None:
+                                chunk_id = f"chunk_{len(chunk_order)}"
+                            
+                            if chunk_data is not None:
+                                chunk_order.append(chunk_id)
+                                
+                                # Try immediate transcription
+                                worker_pool.add_chunk((chunk_data, chunk_id, timestamp))
+                                if vad_service:
+                                    vad_service.analyze_chunk(chunk_data)
+                            
                         except Exception as e:
-                            print(f"⚠️ Chunk {chunk_id} failed, queuing for later")
-                            failed_chunks[chunk_id] = chunk_data
+                            print(f"⚠️ Chunk processing failed, disabling realtime: {e}")
+                            # On any chunk processing error, disable realtime but continue recording
+                            realtime_enabled = False
+                            break
                             
                 time.sleep(0.1)
                 
             except Exception as e:
-                print(f"⚠️ Chunk processing error: {e}")
-                # Continue processing, don't break
-                time.sleep(0.5)
+                print(f"⚠️ Chunk processing error, disabling realtime: {e}")
+                # On any processing error, disable realtime but continue recording
+                realtime_enabled = False
+                break
     
     def keyboard_listener():
         """Listen for keyboard input in a separate thread."""
@@ -1113,27 +1152,32 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         print("⏳ Finalizing transcription...")
         transcript = None
         
-        # Strategy 1: Try to get real-time assembled transcript
+        # Strategy 1: Try to get real-time assembled transcript (with aggressive timeout)
         if realtime_enabled and worker_pool and chunk_order:
             print("🔄 Attempting to use real-time transcript...")
             try:
-                # Give workers a moment to finish processing
-                time.sleep(2.0)
+                # Give workers a brief moment to finish processing
+                time.sleep(1.0)  # Reduced from 2.0 seconds
                 
-                # Try to get assembled transcript with timeout protection
+                # Try to get assembled transcript with very short timeout
                 transcript_result = [None]
+                transcript_error = [None]
                 
                 def get_transcript():
                     try:
                         transcript_result[0] = worker_pool.get_assembled_transcript()
                     except Exception as e:
-                        print(f"⚠️ Real-time transcript assembly failed: {e}")
+                        transcript_error[0] = e
                 
                 transcript_thread = threading.Thread(target=get_transcript)
                 transcript_thread.start()
-                transcript_thread.join(timeout=5.0)  # 5 second timeout
+                transcript_thread.join(timeout=2.0)  # Reduced from 5.0 seconds
                 
-                if transcript_result[0] and transcript_result[0].strip():
+                if transcript_thread.is_alive():
+                    print("⚠️ Real-time transcript taking too long, using fallback")
+                elif transcript_error[0]:
+                    print(f"⚠️ Real-time transcript failed: {transcript_error[0]}")
+                elif transcript_result[0] and transcript_result[0].strip():
                     transcript = transcript_result[0].strip()
                     print(f"✅ Real-time transcript ready ({len(chunk_order)} chunks processed)")
                 else:
@@ -1187,15 +1231,18 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         restore_keyboard_handler(fd, old_settings)
         
         # Restore original signal handler
-        if signal_handler_setup and _global_recording_state['original_handler']:
-            signal.signal(signal.SIGINT, _global_recording_state['original_handler'])
+        if signal_handler_setup and _global_recording_state.get('original_handler'):
+            try:
+                signal.signal(signal.SIGINT, _global_recording_state['original_handler'])
+            except:
+                pass
             _global_recording_state['original_handler'] = None
             _global_recording_state['recording_event'] = None
             _global_recording_state['cancelled'] = None
         
-        # Stop services with timeout (only if they exist)
+        # Stop services with aggressive timeout (only if they exist)
         if worker_pool or vad_service:
-            cleanup_services_with_timeout(worker_pool, vad_service)
+            cleanup_services_with_timeout(worker_pool, vad_service, timeout=1.0)
         
         # Clean up session file only on complete success
         if success and transcript:
