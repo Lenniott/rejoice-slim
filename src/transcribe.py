@@ -1031,24 +1031,22 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
                             if chunk_data is not None:
                                 chunk_order.append(chunk_id)
                                 
-                                # Try immediate transcription
-                                worker_pool.add_chunk((chunk_data, chunk_id, timestamp))
+                                # Try immediate transcription - pass only the numpy array
+                                worker_pool.add_chunk(chunk_data)
                                 if vad_service:
                                     vad_service.analyze_chunk(chunk_data)
                             
                         except Exception as e:
-                            print(f"⚠️ Chunk processing failed, disabling realtime: {e}")
                             # On any chunk processing error, disable realtime but continue recording
                             realtime_enabled = False
-                            break
+                            return  # Exit the function immediately
                             
                 time.sleep(0.1)
                 
             except Exception as e:
-                print(f"⚠️ Chunk processing error, disabling realtime: {e}")
                 # On any processing error, disable realtime but continue recording
                 realtime_enabled = False
-                break
+                return  # Exit the function immediately
     
     def keyboard_listener():
         """Listen for keyboard input in a separate thread."""
@@ -1097,6 +1095,8 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
     try:
         # Start processing threads (only if realtime is enabled)
         threads = []
+        chunk_thread = None
+        
         if realtime_enabled and worker_pool:
             chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
             chunk_thread.start()
@@ -1128,6 +1128,11 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         stream.stop()
         stream.close()
         
+        # IMPORTANT: Ensure chunk processing thread stops before transcription
+        if chunk_thread and chunk_thread.is_alive():
+            realtime_enabled = False  # Signal thread to stop
+            chunk_thread.join(timeout=1.0)  # Wait up to 1 second
+        
         # Close audio writer
         if audio_writer:
             audio_writer.close()
@@ -1135,6 +1140,9 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         
         # Brief pause to ensure audio stream cleanup is complete
         time.sleep(0.1)
+        
+        # Flush stdout to ensure clean output
+        sys.stdout.flush()
         
         # Check results
         if cancelled.is_set():
@@ -1148,13 +1156,16 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
             return None
         
         # Three-tier transcription strategy
-        print()
+        print()  # Clean line break
+        sys.stdout.flush()
         print("⏳ Finalizing transcription...")
+        sys.stdout.flush()
         transcript = None
         
         # Strategy 1: Try to get real-time assembled transcript (with aggressive timeout)
         if realtime_enabled and worker_pool and chunk_order:
             print("🔄 Attempting to use real-time transcript...")
+            sys.stdout.flush()
             try:
                 # Give workers a brief moment to finish processing
                 time.sleep(1.0)  # Reduced from 2.0 seconds
@@ -1188,17 +1199,20 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         
         # Strategy 2: Skip individual chunk recovery for now - go straight to full transcription
         
-        # Strategy 3: Full file transcription (last resort)
+        # Strategy 3: Full file transcription (main strategy)
         if not transcript:
             print("🔄 Using full file transcription...")
+            sys.stdout.flush()
             
             # Load fresh model if needed
             if not whisper_model:
                 try:
                     print("🎤 Loading Whisper model for transcription...")
+                    sys.stdout.flush()
                     whisper_model = whisper.load_model(WHISPER_MODEL)
                 except Exception as e:
                     print(f"❌ Could not load Whisper model: {e}")
+                    sys.stdout.flush()
                     preserve_session_for_recovery(session_audio_file, session_id, "model_load_failed")
                     return None
             
@@ -1208,9 +1222,11 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         if transcript and transcript.strip():
             success = True
             print("✅ Transcription completed successfully")
+            sys.stdout.flush()
             return transcript.strip()
         else:
             print("⚠️ No speech detected in recording")
+            sys.stdout.flush()
             preserve_session_for_recovery(session_audio_file, session_id, "no_speech")
             return None
         
@@ -1248,6 +1264,7 @@ def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]
         if success and transcript:
             cleanup_session_file(None, session_audio_file)
             print("🗑️ Temporary audio file cleaned up")
+            sys.stdout.flush()
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle file opening based on settings"""
@@ -1332,7 +1349,7 @@ def list_transcripts():
             for transcript_id, filename, creation_date in transcripts:
                 date_str = creation_date.strftime("%Y-%m-%d %H:%M")
                 print(f"   {filename} (ID: {transcript_id}, {date_str})")
-            print()
+            
         
         # Show legacy format transcripts
         if legacy_files:
@@ -1340,7 +1357,7 @@ def list_transcripts():
             for filename, mod_time in legacy_files:
                 date_str = mod_time.strftime("%Y-%m-%d %H:%M")
                 print(f"   {filename} ({date_str})")
-            print()
+            
         
         if transcripts:
             print(f"💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
@@ -1637,7 +1654,7 @@ def main(args=None):
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
         pyperclip.copy(transcribed_text)
-        print()
+        
         print("📋 Transcription copied to clipboard.")
 
     # 4. Save transcript with default filename first, then let AI rename it
