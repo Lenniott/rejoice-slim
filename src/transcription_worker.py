@@ -4,11 +4,28 @@ import time
 import threading
 import queue
 import logging
-from typing import List, Optional, Callable
+import sys
+import os
+from contextlib import contextmanager
+from typing import List, Optional, Callable, Tuple
 import numpy as np
 import whisper
 
 logger = logging.getLogger(__name__)
+
+@contextmanager
+def suppress_whisper_output():
+    """Suppress Whisper's progress bars and verbose output"""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            sys.stdout = devnull
+            sys.stderr = devnull
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 class TranscriptionWorker:
     """
@@ -53,14 +70,14 @@ class TranscriptionWorker:
     
     def start(self, 
               chunk_queue: queue.Queue,
-              result_callback: Callable[[str, int], None]) -> None:
+              result_callback: Callable[[str, str, float], None]) -> None:
         """
         Start the worker thread.
         
         Args:
             chunk_queue: Queue containing audio chunks to process
             result_callback: Function to call with transcription results
-                            Signature: callback(transcribed_text, chunk_number)
+                            Signature: callback(chunk_id, transcribed_text, timestamp)
         """
         self.chunk_queue = chunk_queue
         self.result_callback = result_callback
@@ -99,8 +116,20 @@ class TranscriptionWorker:
                 if chunk_data is None:  # Sentinel value to stop
                     break
                 
-                chunk_number, audio_chunk = chunk_data
-                self._process_chunk(audio_chunk, chunk_number)
+                # Handle both old format (chunk_number, audio) and new format (chunk_info dict)
+                if isinstance(chunk_data, dict):
+                    chunk_id = chunk_data['id']
+                    audio_chunk = chunk_data['data']
+                    timestamp = chunk_data['timestamp']
+                    retry_count = chunk_data.get('retry_count', 0)
+                else:
+                    # Legacy format support
+                    chunk_number, audio_chunk = chunk_data
+                    chunk_id = str(chunk_number)
+                    timestamp = time.time()
+                    retry_count = 0
+                
+                self._process_chunk(audio_chunk, chunk_id, timestamp, retry_count)
                 
             except queue.Empty:
                 # Timeout - check if we should stop
@@ -111,40 +140,75 @@ class TranscriptionWorker:
         
         logger.debug(f"Worker {self.worker_id} exiting main loop")
     
-    def _process_chunk(self, audio_chunk: np.ndarray, chunk_number: int) -> None:
+    def _process_chunk(self, audio_chunk: np.ndarray, chunk_id: str, timestamp: float, retry_count: int = 0) -> None:
         """
         Process a single audio chunk with retry logic.
         
         Args:
             audio_chunk: Audio data as numpy array
-            chunk_number: Sequential chunk number for logging
+            chunk_id: Unique identifier for this chunk
+            timestamp: Timestamp when chunk was recorded
+            retry_count: Current retry attempt number
         """
         start_time = time.time()
         
+        # Validate audio chunk before processing
+        if audio_chunk is None or len(audio_chunk) == 0:
+            logger.warning(f"Worker {self.worker_id} chunk {chunk_id} is empty, skipping")
+            self.result_callback(chunk_id, "", timestamp)
+            return
+        
+        # Check if chunk is too short (less than 1 second)
+        duration = len(audio_chunk) / 16000  # Assuming 16kHz sample rate
+        if duration < 1.0:
+            logger.warning(f"Worker {self.worker_id} chunk {chunk_id} too short ({duration:.1f}s), skipping")
+            self.result_callback(chunk_id, "", timestamp)
+            return
+        
+        # Check for silent audio (all zeros or very low amplitude)
+        max_amplitude = np.max(np.abs(audio_chunk))
+        if max_amplitude < 0.0001:  # More lenient threshold for quiet audio
+            logger.warning(f"Worker {self.worker_id} chunk {chunk_id} appears silent (max amp: {max_amplitude:.6f})")
+            self.result_callback(chunk_id, "", timestamp)
+            return
+        
+        logger.debug(f"Worker {self.worker_id} processing chunk {chunk_id}: {duration:.1f}s, max_amp: {max_amplitude:.3f}")
+        
         for attempt in range(self.max_retry_attempts + 1):
             try:
-                # Transcribe the chunk
-                if self.whisper_language and self.whisper_language.lower() != "auto":
-                    result = self.whisper_model.transcribe(
-                        audio_chunk, 
-                        fp16=False, 
-                        language=self.whisper_language
-                    )
-                else:
-                    result = self.whisper_model.transcribe(audio_chunk, fp16=False)
+                # Ensure audio is in correct format for Whisper
+                if audio_chunk.dtype != np.float32:
+                    audio_chunk = audio_chunk.astype(np.float32)
+                
+                # Normalize audio to [-1, 1] range if needed
+                if np.max(np.abs(audio_chunk)) > 1.0:
+                    audio_chunk = audio_chunk / np.max(np.abs(audio_chunk))
+                
+                # Transcribe the chunk with suppressed output
+                with suppress_whisper_output():
+                    if self.whisper_language and self.whisper_language.lower() != "auto":
+                        result = self.whisper_model.transcribe(
+                            audio_chunk, 
+                            fp16=False, 
+                            language=self.whisper_language,
+                            verbose=False  # Reduce Whisper's own logging
+                        )
+                    else:
+                        result = self.whisper_model.transcribe(
+                            audio_chunk, 
+                            fp16=False,
+                            verbose=False
+                        )
                 
                 transcribed_text = result["text"].strip()
                 
                 # Success - send result
+                self.result_callback(chunk_id, transcribed_text, timestamp)
+                
                 if transcribed_text:
-                    self.result_callback(transcribed_text, chunk_number)
-                    logger.debug(f"Worker {self.worker_id} chunk {chunk_number} "
-                               f"transcribed successfully: '{transcribed_text[:50]}...'")
+                    logger.info(f"Worker {self.worker_id} chunk {chunk_id} SUCCESS: '{transcribed_text[:50]}...'")
                 else:
-                    # Empty transcription - still count as success
-                    self.result_callback("", chunk_number)
-                    logger.debug(f"Worker {self.worker_id} chunk {chunk_number} "
-                               f"produced empty transcription")
+                    logger.debug(f"Worker {self.worker_id} chunk {chunk_id} empty result (no speech detected)")
                 
                 # Update statistics
                 self.chunks_processed += 1
@@ -155,18 +219,17 @@ class TranscriptionWorker:
                 if attempt < self.max_retry_attempts:
                     # Retry with exponential backoff
                     delay = self.retry_delay_base * (2 ** attempt)
-                    logger.warning(f"Worker {self.worker_id} chunk {chunk_number} "
-                                 f"attempt {attempt + 1} failed: {e}. "
+                    logger.warning(f"Worker {self.worker_id} chunk {chunk_id} "
+                                 f"attempt {attempt + 1}/{self.max_retry_attempts + 1} failed: {e}. "
                                  f"Retrying in {delay}s...")
                     time.sleep(delay)
                 else:
                     # All retries exhausted
-                    error_placeholder = f"[--- Transcription failed for this segment (chunk {chunk_number}) ---]"
-                    self.result_callback(error_placeholder, chunk_number)
+                    self.result_callback(chunk_id, "", timestamp)  # Send empty instead of error text
                     self.chunks_failed += 1
                     
-                    logger.error(f"Worker {self.worker_id} chunk {chunk_number} "
-                               f"failed after {self.max_retry_attempts} retries: {e}")
+                    logger.error(f"Worker {self.worker_id} chunk {chunk_id} "
+                               f"FAILED after {self.max_retry_attempts + 1} attempts: {e}")
                     return
     
     def get_stats(self) -> dict:
@@ -197,6 +260,7 @@ class TranscriptionWorker:
 class TranscriptionWorkerPool:
     """
     Manages a pool of transcription workers for concurrent processing.
+    Enhanced for streaming transcription with real-time results.
     """
     
     def __init__(self, 
@@ -223,10 +287,14 @@ class TranscriptionWorkerPool:
         self.result_queue = queue.Queue()
         self.workers = []
         
-        # Result collection
+        # Result collection (enhanced for streaming)
         self.transcribed_segments = []
         self.segments_lock = threading.Lock()
         self.chunk_count = 0
+        
+        # Streaming results tracking
+        self.streaming_results = {}  # chunk_id -> (timestamp, text)
+        self.streaming_lock = threading.Lock()
         
         logger.info(f"TranscriptionWorkerPool initialized with {num_workers} workers")
     
@@ -272,7 +340,7 @@ class TranscriptionWorkerPool:
     
     def add_chunk(self, audio_chunk: np.ndarray) -> None:
         """
-        Add a chunk to the processing queue.
+        Add a chunk to the processing queue (legacy method).
         
         Args:
             audio_chunk: Audio data as numpy array
@@ -281,28 +349,107 @@ class TranscriptionWorkerPool:
         self.chunk_queue.put((self.chunk_count, audio_chunk))
         logger.debug(f"Added chunk {self.chunk_count} to processing queue")
     
-    def _result_callback(self, transcribed_text: str, chunk_number: int) -> None:
+    def add_chunk_with_id(self, chunk_id: str, audio_chunk: np.ndarray, timestamp: float) -> None:
+        """
+        Add a chunk with specific ID and timestamp to the processing queue.
+        
+        Args:
+            chunk_id: Unique identifier for this chunk
+            audio_chunk: Audio data as numpy array
+            timestamp: Timestamp when chunk was recorded
+        """
+        chunk_info = {
+            'id': chunk_id,
+            'data': audio_chunk,
+            'timestamp': timestamp,
+            'retry_count': 0
+        }
+        
+        try:
+            self.chunk_queue.put(chunk_info, timeout=1.0)
+            logger.debug(f"Added chunk {chunk_id} to processing queue")
+        except queue.Full:
+            logger.warning(f"Chunk queue full, dropping chunk {chunk_id}")
+    
+    def get_completed_results(self, timeout: float = 0.5) -> list:
+        """
+        Get all completed transcription results.
+        
+        Args:
+            timeout: Maximum time to wait for results
+            
+        Returns:
+            List of (chunk_id, transcript_text, timestamp) tuples
+        """
+        results = []
+        
+        try:
+            while True:
+                result = self.result_queue.get(timeout=timeout)
+                results.append(result)
+        except queue.Empty:
+            pass
+        
+        return results
+    
+    def get_streaming_transcript(self) -> str:
+        """
+        Get the current assembled transcript from completed chunks.
+        
+        Returns:
+            str: Current transcript assembled from streaming results
+        """
+        with self.streaming_lock:
+            if not self.streaming_results:
+                return ""
+            
+            # Sort by timestamp and join
+            sorted_results = sorted(self.streaming_results.values(), key=lambda x: x[0])
+            transcript_parts = [text for _, text in sorted_results if text.strip()]
+            
+            return " ".join(transcript_parts)
+    
+    def _result_callback(self, chunk_id: str, transcribed_text: str, timestamp: float) -> None:
         """
         Callback for worker results.
         
         Args:
+            chunk_id: Unique identifier for the chunk
             transcribed_text: Transcribed text from the chunk
-            chunk_number: Sequential chunk number
+            timestamp: Timestamp when chunk was recorded
         """
+        # Store in streaming results
+        with self.streaming_lock:
+            self.streaming_results[chunk_id] = (timestamp, transcribed_text)
+        
+        # Also put in result queue for immediate retrieval
+        try:
+            self.result_queue.put((chunk_id, transcribed_text, timestamp), timeout=1.0)
+        except queue.Full:
+            logger.warning(f"Result queue full, dropping result for chunk {chunk_id}")
+        
+        # Legacy support: maintain transcribed_segments list
         with self.segments_lock:
-            # Ensure we have space for this chunk number
-            while len(self.transcribed_segments) < chunk_number:
-                self.transcribed_segments.append("")
-            
-            # Insert the result at the correct position
-            self.transcribed_segments[chunk_number - 1] = transcribed_text
-            
-            logger.debug(f"Result for chunk {chunk_number} stored: "
-                        f"'{transcribed_text[:50]}...'")
+            # Convert chunk_id to number if possible for legacy compatibility
+            try:
+                chunk_number = int(chunk_id.split('_')[-1]) if '_' in chunk_id else int(chunk_id)
+                
+                # Ensure we have space for this chunk number
+                while len(self.transcribed_segments) < chunk_number:
+                    self.transcribed_segments.append("")
+                
+                # Insert the result at the correct position
+                self.transcribed_segments[chunk_number - 1] = transcribed_text
+            except (ValueError, IndexError):
+                # If chunk_id isn't numeric, just append
+                self.transcribed_segments.append(transcribed_text)
+        
+        logger.debug(f"Result for chunk {chunk_id} stored: "
+                    f"'{transcribed_text[:50]}...'")
     
     def get_assembled_transcript(self) -> str:
         """
-        Get the complete assembled transcript.
+        Get the complete assembled transcript (legacy method).
         
         Returns:
             str: Complete transcript with all processed chunks
