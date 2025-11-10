@@ -35,7 +35,7 @@ class TranscriptFileManager:
                             custom_id: Optional[str] = None) -> Tuple[str, str]:
         """
         Create a new transcript file with the new naming format.
-        Format: {generated_filename}_DDMMYYYY_{id}.{ext}
+        Format: {id}_DDMMYYYY_{generated_filename}.{ext}
         
         Args:
             transcript_text: Transcribed text content
@@ -62,11 +62,11 @@ class TranscriptFileManager:
         header = TranscriptHeader(transcript_id)
         file_content = header.create_file_content(transcript_text, self.output_format)
         
-        # Generate filename with new format: name_DDMMYYYY_ID.ext
+        # Generate filename with new format: ID_DDMMYYYY_name.ext
         from datetime import datetime
         date_str = datetime.now().strftime("%d%m%Y")
         clean_filename = self._clean_filename(generated_filename)
-        filename = f"{clean_filename}_{date_str}_{transcript_id}.{self.output_format}"
+        filename = f"{transcript_id}_{date_str}_{clean_filename}.{self.output_format}"
         file_path = os.path.join(self.save_path, filename)
         
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -153,16 +153,16 @@ class TranscriptFileManager:
                             
                             # Extract date and ID from current filename
                             import re
-                            pattern = re.compile(r'^.*_(\d{8})_(\d+)\.(txt|md)$')
+                            pattern = re.compile(r'^(\d+)_(\d{8})_.*\.(txt|md)$')
                             match = pattern.match(current_filename)
                             if match:
-                                date_str = match.group(1)
-                                file_id = match.group(2)
+                                file_id = match.group(1)
+                                date_str = match.group(2)
                                 ext = match.group(3)
                                 
                                 # Create new filename with updated name
                                 clean_filename = self._clean_filename(new_filename)
-                                new_filename_full = f"{clean_filename}_{date_str}_{file_id}.{ext}"
+                                new_filename_full = f"{file_id}_{date_str}_{clean_filename}.{ext}"
                                 new_file_path = os.path.join(self.save_path, new_filename_full)
                                 
                                 # Rename file if the name changed
@@ -233,7 +233,7 @@ class TranscriptFileManager:
     
     def _extract_id_from_filename(self, filename: str) -> Optional[str]:
         """
-        Extract ID from filename with format: *_DDMMYYYY_ID.ext
+        Extract ID from filename with format: ID_DDMMYYYY_*.ext
         
         Args:
             filename: Filename to extract ID from
@@ -241,7 +241,7 @@ class TranscriptFileManager:
         Returns:
             str or None: Extracted ID or None if not found
         """
-        pattern = re.compile(r'^.*_\d{8}_(\d+)\.(txt|md)$')
+        pattern = re.compile(r'^(\d+)_\d{8}_.*\.(txt|md)$')
         match = pattern.match(filename)
         if match:
             return match.group(1)

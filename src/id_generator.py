@@ -38,7 +38,7 @@ class TranscriptIDGenerator:
     def _scan_existing_ids(self) -> int:
         """
         Scan directory for existing transcript files with the new naming format.
-        Format: {generated_name}_DDMMYYYY_{id}.{ext}
+        Format: {id}_DDMMYYYY_{generated_name}.{ext}
         
         Returns:
             int: Highest existing ID number (0 if none found)
@@ -46,8 +46,8 @@ class TranscriptIDGenerator:
         if not os.path.exists(self.save_path):
             return 0
         
-        # Pattern to match new format: *_DDMMYYYY_[digits].txt/md (any number of digits)
-        id_pattern = re.compile(r'^.*_\d{8}_(\d+)\.(txt|md)$')
+        # Pattern to match new format: [digits]_DDMMYYYY_*.txt/md (any number of digits)
+        id_pattern = re.compile(r'^(\d+)_\d{8}_.*\.(txt|md)$')
         
         highest_id = 0
         
@@ -81,7 +81,7 @@ class TranscriptIDGenerator:
         id_num = int(id_str)
         
         # Look for files that match this ID numerically
-        id_pattern = re.compile(r'^.*_\d{8}_(\d+)\.(txt|md)$')
+        id_pattern = re.compile(r'^(\d+)_\d{8}_.*\.(txt|md)$')
         
         try:
             for filename in os.listdir(self.save_path):
@@ -98,7 +98,7 @@ class TranscriptIDGenerator:
     def find_transcript_by_id(self, id_str: str) -> Optional[str]:
         """
         Find transcript file by ID using flexible matching.
-        Looks for files where the last part after the final underscore matches the ID.
+        Looks for files where the first part before the first underscore matches the ID.
         
         Args:
             id_str: ID string to find
@@ -115,9 +115,9 @@ class TranscriptIDGenerator:
         # Convert to integer to handle zero-padding differences
         id_num = int(id_str)
         
-        # Flexible pattern: any filename ending with _ID.ext
-        # This matches both new format (name_DDMMYYYY_ID.md) and any other format with _ID at the end
-        id_pattern = re.compile(r'^.*_(\d+)\.(txt|md)$')
+        # Flexible pattern: any filename starting with ID_
+        # This matches both new format (ID_DDMMYYYY_name.md) and any other format with ID_ at the start
+        id_pattern = re.compile(r'^(\d+)_.*\.(txt|md)$')
         
         matching_files = []
         

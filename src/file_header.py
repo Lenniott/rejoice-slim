@@ -120,7 +120,7 @@ class TranscriptHeader:
         """
         # First try to extract from filename
         filename = os.path.basename(filepath)
-        pattern = re.compile(r'^.*_\d{8}_(\d+)\.(txt|md)$')
+        pattern = re.compile(r'^(\d+)_\d{8}_.*\.(txt|md)$')
         match = pattern.match(filename)
         if match:
             return match.group(1)
@@ -142,7 +142,7 @@ class TranscriptHeader:
     def is_id_format_file(filename: str) -> bool:
         """
         Check if filename follows the new ID format.
-        Format: {generated_name}_DDMMYYYY_{id}.{ext}
+        Format: {id}_DDMMYYYY_{generated_name}.{ext}
         
         Args:
             filename: Filename to check
@@ -150,7 +150,7 @@ class TranscriptHeader:
         Returns:
             bool: True if filename matches new ID format
         """
-        id_pattern = re.compile(r'^.+_\d{8}_\d+\.(txt|md)$')
+        id_pattern = re.compile(r'^\d+_\d{8}_.+\.(txt|md)$')
         return bool(id_pattern.match(filename))
     
     @staticmethod
