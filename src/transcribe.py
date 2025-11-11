@@ -30,7 +30,7 @@ import signal
 import select
 import termios
 import tty
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 # Import our new chunking components
 from audio_chunker import AudioChunker
@@ -828,10 +828,13 @@ def _global_signal_handler(signum, frame):
         if _global_recording_state['recording_event']:
             _global_recording_state['recording_event'].clear()
 
-def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: bool = False) -> Optional[str]:
+def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: bool = False) -> Tuple[Optional[str], Optional[Path]]:
     """
     Records audio with parallel streaming transcription for immediate results.
     Real-time processing with minimal fallback to full transcription.
+    
+    Returns:
+        Tuple[Optional[str], Optional[Path]]: (transcribed_text, session_audio_file_path)
     """
     # Create session-based temp file
     temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
@@ -909,7 +912,7 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
         else:
             print("\n🚫 Loading cancelled by user.")
         cleanup_session_file(audio_writer, session_audio_file)
-        return None
+        return None, None
     except Exception as e:
         print(f"⚠️ Whisper model failed to load: {e}")
         print("⚠️ Continuing with audio-only recording")
@@ -1171,12 +1174,12 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
         if cancelled.is_set():
             print("🚫 Recording cancelled.")
             preserve_session_for_recovery(session_audio_file, session_id, "cancelled")
-            return None
+            return None, None
         
         if total_frames_written == 0:
             print("⚠️ No audio recorded")
             cleanup_session_file(None, session_audio_file)
-            return None
+            return None, None
         
         # FAST ASSEMBLY: Use real-time results if available
         transcript = None
@@ -1204,7 +1207,7 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
                     
                     if transcript and transcript.strip():
                         success = True
-                        return transcript.strip()
+                        return transcript.strip(), session_audio_file
         
         # FALLBACK: Full file transcription only if real-time failed
         if not transcript:
@@ -1229,7 +1232,7 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
                 except Exception as e:
                     print(f"❌ Could not load Whisper model: {e}")
                     preserve_session_for_recovery(session_audio_file, session_id, "model_load_failed")
-                    return None
+                    return None, None
             
             transcript = transcribe_session_file(session_audio_file, whisper_model)
         
@@ -1237,16 +1240,16 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
         if transcript and transcript.strip():
             success = True
             print("✅ Transcription completed")
-            return transcript.strip()
+            return transcript.strip(), session_audio_file
         else:
             print("⚠️ No speech detected in recording")
             preserve_session_for_recovery(session_audio_file, session_id, "no_speech")
-            return None
+            return None, None
         
     except Exception as e:
         print(f"❌ Recording error: {e}")
         preserve_session_for_recovery(session_audio_file, session_id, "error")
-        return None
+        return None, None
     
     finally:
         # Cleanup
@@ -1273,9 +1276,8 @@ def record_audio_chunked(device_override: Optional[int] = None, high_accuracy: b
         if worker_pool or vad_service:
             cleanup_services_with_timeout(worker_pool, vad_service, timeout=1.0)
         
-        # Clean up session file only on complete success
-        if success and transcript:
-            cleanup_session_file(None, session_audio_file)
+        # Don't cleanup session file - let caller handle permanent storage
+        # The cleanup will happen after audio is stored in the caller
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle file opening based on settings"""
@@ -1327,7 +1329,7 @@ def list_transcripts():
     """List all available transcripts with their IDs."""
     try:
         file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-        transcripts = file_manager.list_transcripts()
+        transcripts = file_manager.list_transcripts_with_audio()
         
         # Also check for legacy format files (only in SAVE_PATH)
         legacy_files = []
@@ -1357,9 +1359,14 @@ def list_transcripts():
         # Show new ID-format transcripts first
         if transcripts:
             print("🆔 New Format (ID-based):")
-            for transcript_id, filename, creation_date in transcripts:
+            print(f"   {'ID':<6} {'Created':<16} {'Audio':<8} {'Duration':<10} {'Filename'}")
+            print("   " + "─" * 80)
+            
+            for transcript_id, filename, creation_date, audio_count, total_duration in transcripts:
                 date_str = creation_date.strftime("%Y-%m-%d %H:%M")
-                print(f"   {filename} (ID: {transcript_id}, {date_str})")
+                audio_str = f"{audio_count}" if audio_count > 0 else "-"
+                duration_str = f"{total_duration:.1f}s" if audio_count > 0 else "-"
+                print(f"   {transcript_id:<6} {date_str:<16} {audio_str:<8} {duration_str:<10} {filename}")
             
         
         # Show legacy format transcripts
@@ -1371,11 +1378,206 @@ def list_transcripts():
             
         
         if transcripts:
-            print(f"💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
-        print(f"💡 New transcripts use format: descriptive-name_DDMMYYYY_000001.{OUTPUT_FORMAT}")
+            print(f"\n💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
+            print(f"💡 Use 'rec --audio XXXXXX' to see audio files for a transcript")
+            print(f"💡 Use 'rec --reprocess XXXXXX' to reprocess all audio for a transcript")
+        print(f"💡 New transcripts use format: XXXXXX_DDMMYYYY_descriptive-name.{OUTPUT_FORMAT}")
+        print(f"💡 Use 'rec --reprocess-failed' to process orphaned audio files")
         
     except Exception as e:
         print(f"❌ Error listing transcripts: {e}")
+
+def transcribe_audio_file(audio_path: str) -> str:
+    """Transcribe a single audio file using the same method as the main transcription."""
+    from pathlib import Path
+    import whisper
+    
+    audio_file = Path(audio_path)
+    if not audio_file.exists():
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    
+    try:
+        # Load Whisper model
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+        
+        # Transcribe the audio file
+        result = whisper_model.transcribe(str(audio_file), verbose=False)
+        transcript_text = result.get('text', '').strip()
+        
+        return transcript_text if transcript_text else ""
+        
+    except Exception as e:
+        raise Exception(f"Transcription failed: {str(e)}")
+
+def reprocess_transcript_command(id_reference: str, overwrite_existing: bool = False):
+    """Reprocess all audio files for a specific transcript ID."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript ID has audio files
+        audio_files_info = file_manager.get_audio_files_for_transcript(id_reference)
+        if not audio_files_info:
+            print(f"❌ No audio files found for transcript ID {id_reference}")
+            return
+        
+        print(f"🎵 Found {len(audio_files_info)} audio files for transcript {id_reference}:")
+        for audio_info in audio_files_info:
+            filename = os.path.basename(audio_info['path'])
+            duration_str = f"{audio_info['duration']:.1f}s" if audio_info['exists'] else "Missing"
+            status = "✅" if audio_info['exists'] else "❌"
+            print(f"   {status} {filename} ({duration_str})")
+        
+        # Ask for confirmation
+        response = input(f"\n🔄 Reprocess {len(audio_files_info)} audio files? (y/N): ").strip().lower()
+        if response != 'y':
+            print("❌ Reprocessing cancelled")
+            return
+        
+        # Define summarization callback if AI is enabled
+        summarization_callback = None
+        if AUTO_METADATA:
+            try:
+                summarizer = SummarizationService(
+                    ollama_model=OLLAMA_MODEL,
+                    ollama_timeout=OLLAMA_TIMEOUT,
+                    max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+                )
+                if summarizer.check_ollama_available():
+                    def summarize_transcript(transcript_text: str) -> dict:
+                        """Generate AI summary and metadata."""
+                        return summarizer.get_metadata(transcript_text) or {}
+                    
+                    summarization_callback = summarize_transcript
+                else:
+                    print("⚠️ Ollama not available - skipping AI summarization")
+                    
+            except Exception as e:
+                print(f"⚠️ AI summarization not available: {str(e)}")
+        
+        # Perform reprocessing
+        success, transcript_path, processed_files = file_manager.reprocess_transcript_audio(
+            id_reference,
+            transcription_callback=transcribe_audio_file,
+            summarization_callback=summarization_callback,
+            overwrite_existing=overwrite_existing
+        )
+        
+        if success:
+            print(f"\n✅ Reprocessing completed successfully!")
+            print(f"📁 Transcript: {os.path.basename(transcript_path)}")
+            print(f"🎵 Processed {len(processed_files)} audio files:")
+            for filename in processed_files:
+                print(f"   - {filename}")
+        else:
+            print(f"\n❌ Reprocessing failed: {transcript_path}")
+    
+    except Exception as e:
+        print(f"❌ Error during reprocessing: {e}")
+
+def reprocess_failed_command():
+    """Reprocess all orphaned audio files."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Define summarization callback if AI is enabled
+        summarization_callback = None
+        if AUTO_METADATA:
+            try:
+                summarizer = SummarizationService(
+                    ollama_model=OLLAMA_MODEL,
+                    ollama_timeout=OLLAMA_TIMEOUT,
+                    max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+                )
+                if summarizer.check_ollama_available():
+                    def summarize_transcript(transcript_text: str) -> dict:
+                        """Generate AI summary and metadata."""
+                        return summarizer.get_metadata(transcript_text) or {}
+                    
+                    summarization_callback = summarize_transcript
+                else:
+                    print("⚠️ Ollama not available - skipping AI summarization")
+                    
+            except Exception as e:
+                print(f"⚠️ AI summarization not available: {str(e)}")
+        
+        # Perform batch reprocessing
+        results = file_manager.reprocess_all_failed_transcripts(
+            transcription_callback=transcribe_audio_file,
+            summarization_callback=summarization_callback
+        )
+        
+        if results:
+            successful = [r for r in results if r[1]]
+            failed = [r for r in results if not r[1]]
+            
+            print(f"\n📊 Batch reprocessing completed:")
+            print(f"✅ Successful: {len(successful)}")
+            print(f"❌ Failed: {len(failed)}")
+            
+            if successful:
+                print(f"\n✅ Successfully reprocessed:")
+                for transcript_id, _, message in successful:
+                    print(f"   - ID {transcript_id}: {message}")
+            
+            if failed:
+                print(f"\n❌ Failed to reprocess:")
+                for transcript_id, _, message in failed:
+                    print(f"   - ID {transcript_id}: {message}")
+        else:
+            print("✅ No orphaned audio files found to reprocess")
+    
+    except Exception as e:
+        print(f"❌ Error during batch reprocessing: {e}")
+
+def show_audio_files(id_reference):
+    """Show audio files associated with a transcript."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript exists
+        try:
+            existing_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            return
+            
+        if not existing_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            return
+        
+        clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+        audio_files_info = file_manager.get_audio_files_for_transcript(id_reference)
+        
+        print(f"\n🎵 Audio files for transcript {clean_id}:")
+        
+        if not audio_files_info:
+            print("No audio files found for this transcript.")
+            return
+        
+        print("-" * 80)
+        print(f"{'Filename':<40} {'Size':<10} {'Duration':<10} {'Status'}")
+        print("-" * 80)
+        
+        total_size = 0
+        total_duration = 0
+        
+        for audio_info in audio_files_info:
+            filename = os.path.basename(audio_info['path'])
+            size_str = f"{audio_info['size_mb']:.1f}MB" if audio_info['exists'] else "Missing"
+            duration_str = f"{audio_info['duration']:.1f}s" if audio_info['exists'] else "-"
+            status = "✅ OK" if audio_info['exists'] else "❌ Missing"
+            
+            print(f"{filename:<40} {size_str:<10} {duration_str:<10} {status}")
+            
+            if audio_info['exists']:
+                total_size += audio_info['size_mb']
+                total_duration += audio_info['duration']
+        
+        print("-" * 80)
+        print(f"Total: {len(audio_files_info)} files, {total_size:.1f}MB, {total_duration:.1f}s")
+        
+    except Exception as e:
+        print(f"❌ Error showing audio files: {e}")
 
 def show_transcript(id_reference):
     """Show the content of a transcript by ID."""
@@ -1429,7 +1631,7 @@ def append_to_transcript(id_reference):
         print("\n--- Recording additional content ---")
         
         # Record new audio
-        new_transcript = record_audio_chunked()
+        new_transcript, session_audio_file = record_audio_chunked()
         if not new_transcript:
             print("❌ No new content recorded.")
             return
@@ -1442,11 +1644,18 @@ def append_to_transcript(id_reference):
         print("--------------------")
         
         # Append to existing transcript
-        updated_path = file_manager.append_to_transcript(id_reference, new_transcript)
+        updated_path = file_manager.append_to_transcript(id_reference, new_transcript, session_audio_file=session_audio_file)
         
         if updated_path:
             print(f"✅ Successfully appended to transcript {clean_id}")
             print(f"📁 Updated file: {updated_path}")
+            
+            # Clean up the session file after successful append
+            if session_audio_file and session_audio_file.exists():
+                try:
+                    session_audio_file.unlink()  # Remove the temporary session file
+                except Exception as e:
+                    print(f"⚠️ Could not remove session file: {e}")
             
             # Copy combined content to clipboard if enabled
             if AUTO_COPY:
@@ -1646,7 +1855,7 @@ def main(args=None):
         # 1. Record Audio with real-time chunking and transcription
         device_override = args.device if hasattr(args, 'device') and args.device is not None else None
         high_accuracy = args.high_accuracy if hasattr(args, 'high_accuracy') else False
-        transcribed_text = record_audio_chunked(device_override, high_accuracy)
+        transcribed_text, session_audio_file = record_audio_chunked(device_override, high_accuracy)
         if not transcribed_text:
             return
     except KeyboardInterrupt:
@@ -1675,9 +1884,18 @@ def main(args=None):
     try:
         file_path, transcript_id = file_manager.create_new_transcript(
             transcribed_text, 
-            "transcript"  # Use default name initially
+            "transcript",  # Use default name initially
+            session_audio_file=session_audio_file
         )
         print(f"✅ Transcript {transcript_id} successfully saved")
+        
+        # Clean up the session file after successful storage
+        if session_audio_file and session_audio_file.exists():
+            try:
+                session_audio_file.unlink()  # Remove the temporary session file
+            except Exception as e:
+                print(f"⚠️ Could not remove session file: {e}")
+                
     except Exception as e:
         print(f"❌ Error saving transcript: {e}")
         return
@@ -1732,6 +1950,14 @@ if __name__ == "__main__":
                        help='Show content of transcript by ID')
     parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
                        help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
+    parser.add_argument('--audio', type=str, metavar='ID', dest='show_audio',
+                       help='Show audio files associated with transcript by ID')
+    parser.add_argument('--reprocess', type=str, metavar='ID', dest='reprocess',
+                       help='Reprocess all audio files for transcript ID (transcribe + summarize)')
+    parser.add_argument('--reprocess-failed', action='store_true',
+                       help='Reprocess all orphaned audio files (audio without transcript)')
+    parser.add_argument('--overwrite', action='store_true',
+                       help='Overwrite existing transcript when reprocessing (default: create new)')
     parser.add_argument('-o', '--open-folder', action='store_true',
                        help='Open the transcripts folder in Finder/Explorer')
     parser.add_argument('-r', '--recover', nargs='?', const='latest', 
@@ -1753,6 +1979,12 @@ if __name__ == "__main__":
             list_transcripts()
         elif args.show:
             show_transcript(args.show)
+        elif args.show_audio:
+            show_audio_files(args.show_audio)
+        elif args.reprocess:
+            reprocess_transcript_command(args.reprocess, args.overwrite)
+        elif args.reprocess_failed:
+            reprocess_failed_command()
         elif args.summarize:
             summarize_file(args.summarize)
         elif args.id_reference:
