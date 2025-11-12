@@ -31,6 +31,7 @@ import select
 import termios
 import tty
 from typing import Optional, Dict, Any, Tuple
+from urllib.parse import urlparse
 
 # Import our new ID-based transcript management
 from transcript_manager import TranscriptFileManager, AudioFileManager
@@ -62,7 +63,7 @@ OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
 
@@ -150,6 +151,9 @@ def list_audio_devices():
 def update_env_setting(key, value):
     """Update a setting in the .env file"""
     env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    
+    # Strip whitespace from value to prevent spacing issues
+    value = str(value).strip()
     
     # Read current .env content
     lines = []
@@ -351,6 +355,7 @@ def ai_settings():
         current_metadata = os.getenv('AUTO_METADATA', 'false').lower() == 'true'
         current_timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
         current_max_length = int(os.getenv('OLLAMA_MAX_CONTENT_LENGTH', '32000'))
+        current_api_url = os.getenv('OLLAMA_API_URL', 'http://localhost:11434/api/generate')
         
         timeout_minutes = current_timeout // 60
         timeout_seconds = current_timeout % 60
@@ -359,14 +364,16 @@ def ai_settings():
         print(f"\n🤖 AI Settings")
         print("─" * 15)
         print(f"Current Ollama Model: {current_model}")
+        print(f"Ollama API URL: {current_api_url}")
         print(f"Auto Metadata: {'Yes' if current_metadata else 'No'}")
         print(f"Ollama Timeout: {timeout_str}")
         print(f"Max Content Length: {current_max_length:,} characters")
         print(f"\n1. Change Ollama Model")
-        print(f"2. Toggle Auto Metadata")
-        print(f"3. Change Ollama Timeout")
-        print(f"4. Change Max Content Length")
-        print(f"5. ← Back to Main Menu")
+        print(f"2. Change Ollama API URL")
+        print(f"3. Toggle Auto Metadata")
+        print(f"4. Change Ollama Timeout")
+        print(f"5. Change Max Content Length")
+        print(f"6. ← Back to Main Menu")
         
         choice = input("\n👉 Choose option (1-5): ").strip()
         
@@ -385,13 +392,20 @@ def ai_settings():
                 print("⚠️ Restart the script to use the new model")
         
         elif choice == "2":
+            new_url = input("\nEnter Ollama API URL (e.g., http://localhost:11434/api/generate): ").strip()
+            if new_url:
+                update_env_setting("OLLAMA_API_URL", new_url)
+                print(f"✅ Ollama API URL changed to: {new_url}")
+                print("⚠️ Restart the script to use the new URL")
+
+        elif choice == "3":
             new_setting = input("Auto generate AI metadata? (y/n): ").lower()
             if new_setting in ['y', 'n']:
                 update_env_setting("AUTO_METADATA", 'true' if new_setting == 'y' else 'false')
                 print(f"✅ Auto metadata changed to: {'Yes' if new_setting == 'y' else 'No'}")
                 print("⚠️ Restart the script to use the new setting")
         
-        elif choice == "3":
+        elif choice == "4":
             print(f"\nCurrent timeout: {current_timeout} seconds")
             print("Recommended timeouts:")
             print("  • 60s  - Fast models (gemma3:270m, qwen3:0.6b)")
@@ -413,7 +427,7 @@ def ai_settings():
             except ValueError:
                 print("❌ Please enter a valid number")
         
-        elif choice == "4":
+        elif choice == "5":
             print(f"\nCurrent max content length: {current_max_length:,} characters")
             print("Recommended character limits:")
             print("  • 8,000   - Conservative (original default)")
@@ -433,10 +447,10 @@ def ai_settings():
             except ValueError:
                 print("❌ Please enter a valid number")
         
-        elif choice == "5":
+        elif choice == "6":
             break
         else:
-            print("❌ Invalid choice. Please select 1-4.")
+            print("❌ Invalid choice. Please select 1-6.")
 
 def audio_settings():
     """Audio settings submenu"""
@@ -964,6 +978,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         # Background enhancer for quality improvement
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
+            ollama_api_url=OLLAMA_API_URL,
             ollama_timeout=OLLAMA_TIMEOUT,
             max_content_length=OLLAMA_MAX_CONTENT_LENGTH
         )
@@ -1155,7 +1170,6 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             audio_writer = None
 
         audio_buffer.stop_recording()
-        volume_segmenter.stop_analysis()
         
         # Start loading indicator for processing
         loader = LoadingIndicator("🎤 Processing audio...")
@@ -1196,10 +1210,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             quick_transcript = assembler.finalize_transcript()
             
             # Check if we have real transcription content (not just placeholder)
-            has_real_content = (quick_transcript and 
-                               quick_transcript.transcript_text and 
-                               quick_transcript.transcript_text.strip() and
-                               quick_transcript.transcript_text.strip() != "[No transcription content available]")
+            has_real_content = bool(quick_transcript and quick_transcript.has_content)
             
             if has_real_content:
                 # Mark streaming attempt as successful
@@ -1284,6 +1295,10 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         try:
             if audio_writer:
                 audio_writer.close()
+        except:
+            pass
+        try:
+            volume_segmenter.stop_analysis()
         except:
             pass
 
@@ -1448,6 +1463,7 @@ def reprocess_transcript_command(id_reference: str, overwrite_existing: bool = F
             try:
                 summarizer = SummarizationService(
                     ollama_model=OLLAMA_MODEL,
+                    ollama_api_url=OLLAMA_API_URL,
                     ollama_timeout=OLLAMA_TIMEOUT,
                     max_content_length=OLLAMA_MAX_CONTENT_LENGTH
                 )
@@ -1494,6 +1510,7 @@ def reprocess_failed_command():
             try:
                 summarizer = SummarizationService(
                     ollama_model=OLLAMA_MODEL,
+                    ollama_api_url=OLLAMA_API_URL,
                     ollama_timeout=OLLAMA_TIMEOUT,
                     max_content_length=OLLAMA_MAX_CONTENT_LENGTH
                 )
@@ -1684,6 +1701,7 @@ def summarize_file(path_or_id):
         # Initialize summarization service
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
+            ollama_api_url=OLLAMA_API_URL,
             ollama_timeout=OLLAMA_TIMEOUT,
             notes_folder=SAVE_PATH,  # Use same folder as transcripts for processed files
             max_content_length=OLLAMA_MAX_CONTENT_LENGTH
@@ -1830,6 +1848,7 @@ def recover_session(session_id_or_latest=None):
                 print("🤖 Generating summary and tags...")
                 summarizer = SummarizationService(
                     ollama_model=OLLAMA_MODEL,
+                    ollama_api_url=OLLAMA_API_URL,
                     ollama_timeout=OLLAMA_TIMEOUT,
                     max_content_length=OLLAMA_MAX_CONTENT_LENGTH
                 )
@@ -1932,6 +1951,7 @@ def main(args=None):
         print("🤖 Generating summary and tags...")
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
+            ollama_api_url=OLLAMA_API_URL,
             ollama_timeout=OLLAMA_TIMEOUT,
             max_content_length=OLLAMA_MAX_CONTENT_LENGTH
         )
@@ -1948,7 +1968,12 @@ def main(args=None):
             print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
     # 6. Handle post-transcription actions
-    summarizer_for_check = SummarizationService(ollama_model=OLLAMA_MODEL)
+    summarizer_for_check = SummarizationService(
+        ollama_model=OLLAMA_MODEL,
+        ollama_api_url=OLLAMA_API_URL,
+        ollama_timeout=OLLAMA_TIMEOUT,
+        max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+    )
     handle_post_transcription_actions(transcribed_text, file_path, summarizer_for_check.check_ollama_available(), args)
 
 if __name__ == "__main__":

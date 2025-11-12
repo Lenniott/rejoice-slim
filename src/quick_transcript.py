@@ -38,6 +38,7 @@ class QuickTranscriptResult:
     processing_summary: Dict
     file_path: str
     clipboard_copied: bool
+    has_content: bool
 
 class QuickTranscriptAssembler:
     """
@@ -85,6 +86,29 @@ class QuickTranscriptAssembler:
         self.transcript_ready_callback: Optional[Callable[[QuickTranscriptResult], None]] = None
         
         logger.info("QuickTranscriptAssembler initialized")
+    
+    def _calculate_completion_timeout(self) -> float:
+        """Determine dynamic timeout for segment completion."""
+        with self.lock:
+            if not self.transcription_segments:
+                return 10.0
+            
+            total_duration = sum(
+                segment.segment_info.duration
+                for segment in self.transcription_segments.values()
+                if segment.segment_info
+            )
+            max_duration = max(
+                segment.segment_info.duration
+                for segment in self.transcription_segments.values()
+                if segment.segment_info
+            )
+        
+        base_timeout = 30.0
+        duration_timeout = max_duration * 2.0
+        total_timeout = total_duration * 1.5
+        
+        return max(base_timeout, duration_timeout, total_timeout)
     
     def start_session(self, session_id: str) -> None:
         """
@@ -309,42 +333,42 @@ class QuickTranscriptAssembler:
             logger.error("No active session to finalize")
             return None
         
+        dynamic_timeout = self._calculate_completion_timeout()
+        logger.info(f"QuickTranscriptAssembler: Waiting up to {dynamic_timeout:.1f}s for segment completion")
+        self.wait_for_completion(timeout=dynamic_timeout)
+        
         with self.lock:
-            # Wait a bit for any final segments
-            self.wait_for_completion(timeout=10.0)
+            final_transcript = self.get_current_transcript().strip()
+            has_content = bool(final_transcript)
             
-            # Assemble final transcript
-            final_transcript = self.get_current_transcript()
-            
-            if not final_transcript.strip():
+            if not has_content:
                 logger.warning("No transcription content available")
-                final_transcript = "[No transcription content available]"
             
-            # Calculate statistics
+            completed_segments = [
+                s for s in self.transcription_segments.values() if s.status == 'completed'
+            ]
             total_duration = 0.0
-            completed_segments = [s for s in self.transcription_segments.values() 
-                                if s.status == 'completed']
-            
             if completed_segments:
                 total_duration = max(s.segment_info.end_time for s in completed_segments)
             
             processing_summary = self.processing_stats.copy()
             processing_summary['session_duration'] = time.time() - (self.session_start_time or 0)
             
-            # Save transcript file
-            try:
-                file_path = self._save_transcript_file(final_transcript, processing_summary)
-                logger.info(f"Saved quick transcript: {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to save transcript: {e}")
-                file_path = ""
+            file_path = ""
+            if has_content:
+                try:
+                    file_path = self._save_transcript_file(final_transcript, processing_summary)
+                    logger.info(f"Saved quick transcript: {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save transcript: {e}")
+                    file_path = ""
+            else:
+                self.final_transcript_id = None
             
-            # Copy to clipboard
             clipboard_success = False
-            if self.auto_clipboard and final_transcript.strip():
+            if self.auto_clipboard and has_content:
                 clipboard_success = self._copy_to_clipboard(final_transcript)
             
-            # Create result
             result = QuickTranscriptResult(
                 transcript_id=getattr(self, 'final_transcript_id', None) or self.current_session,
                 transcript_text=final_transcript,
@@ -352,7 +376,8 @@ class QuickTranscriptAssembler:
                 total_duration=total_duration,
                 processing_summary=processing_summary,
                 file_path=file_path,
-                clipboard_copied=clipboard_success
+                clipboard_copied=clipboard_success,
+                has_content=has_content
             )
             
             # Trigger callback
@@ -493,6 +518,15 @@ class QuickTranscriptDisplay:
     @staticmethod
     def format_final_result(result: QuickTranscriptResult) -> List[str]:
         """Format the final result announcement."""
+        if not result.has_content:
+            lines = [
+                "⚠️ Streaming transcript not ready",
+                "🔄 Falling back to full audio transcription..."
+            ]
+            if result.file_path:
+                lines.append(f"📁 Saved: {os.path.basename(result.file_path)}")
+            return lines
+        
         lines = [
             "✅ Recording complete!",
             f"📝 Transcript: {len(result.transcript_text)} characters",

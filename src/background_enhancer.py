@@ -114,6 +114,10 @@ class BackgroundEnhancer:
         Returns:
             True if queued successfully
         """
+        if not quick_result.has_content:
+            logger.info("BackgroundEnhancer: Skipping enhancement for empty quick transcript")
+            return False
+        
         if not os.path.exists(master_audio_path):
             logger.error(f"Master audio file not found: {master_audio_path}")
             return False

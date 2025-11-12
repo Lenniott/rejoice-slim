@@ -179,18 +179,15 @@ class CircularAudioBuffer:
     
     def get_recording_duration(self) -> float:
         """
-        Get the current recording duration in seconds.
-        
-        Returns:
-            Recording duration in seconds
+        Get the current recording duration in seconds based on captured samples.
         """
-        if not self.start_time:
-            return 0.0
+        with self.lock:
+            if self.total_samples_written == 0:
+                if self.is_recording and self.start_time:
+                    # No audio written yet, fall back to wall time
+                    return time.time() - self.start_time
+                return 0.0
             
-        if self.is_recording:
-            return time.time() - self.start_time
-        else:
-            # For stopped recordings, calculate from total samples
             return self.total_samples_written / (self.sample_rate * self.channels)
     
     def get_available_duration(self) -> float:

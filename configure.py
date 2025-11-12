@@ -132,6 +132,17 @@ def main():
         print("⚠️ sounddevice not available, using system default")
         mic_device = "-1"
 
+    # Strip all input values to prevent spacing issues
+    save_path = save_path.strip()
+    output_format = output_format.strip()
+    model_choice = model_choice.strip()
+    language_choice = language_choice.strip()
+    ollama_model = ollama_model.strip()
+    rec_command = rec_command.strip()
+    chunk_duration = str(chunk_duration).strip()
+    silence_duration = str(silence_duration).strip()
+    mic_device = str(mic_device).strip()
+    
     # Write configuration to .env file
     with open(".env", "w") as f:
         f.write(f"SAVE_PATH='{save_path}'\n")
