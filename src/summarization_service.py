@@ -518,7 +518,7 @@ JSON:"""
                     new_output_path = self._rename_transcript_with_ai_filename(file_path, metadata['filename'], frontmatter_data)
                     if new_output_path and new_output_path != file_path:
                         output_path = new_output_path
-                        print(f"📝 Renamed: {os.path.basename(file_path)} → {os.path.basename(output_path)}")
+                        print(f"\n\n📝 Renamed: {os.path.basename(file_path)} → {os.path.basename(output_path)}")
             
             # Write updated content
             with open(output_path, 'w', encoding='utf-8') as f:

@@ -173,6 +173,7 @@ def output_settings():
     AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
     AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
     AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
+    AUTO_CLEANUP_AUDIO = os.getenv("AUTO_CLEANUP_AUDIO", "true").lower() == "true"
     
     while True:
         print(f"\n📁 Output Settings")
@@ -182,14 +183,16 @@ def output_settings():
         print(f"Auto Copy: {'Yes' if AUTO_COPY else 'No'}")
         print(f"Auto Open: {'Yes' if AUTO_OPEN else 'No'}")
         print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
+        print(f"Auto Cleanup Audio: {'Yes' if AUTO_CLEANUP_AUDIO else 'No'}")
         print(f"\n1. Change Output Format")
         print(f"2. Change Save Path")
         print(f"3. Toggle Auto Copy")
         print(f"4. Toggle Auto Open")
         print(f"5. Toggle Auto Metadata")
-        print(f"6. ← Back to Main Menu")
+        print(f"6. Toggle Auto Cleanup Audio")
+        print(f"7. ← Back to Main Menu")
         
-        choice = input("\n👉 Choose option (1-6): ").strip()
+        choice = input("\n👉 Choose option (1-7): ").strip()
         
         if choice == "1":
             format_choice = input("Choose output format (md/txt): ").strip().lower()
@@ -233,9 +236,19 @@ def output_settings():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "6":
+            new_setting = input("Auto cleanup audio files after transcription? (y/n): ").lower()
+            if new_setting in ['y', 'n']:
+                update_env_setting("AUTO_CLEANUP_AUDIO", 'true' if new_setting == 'y' else 'false')
+                AUTO_CLEANUP_AUDIO = (new_setting == 'y')
+                print(f"✅ Auto cleanup audio changed to: {'Yes' if new_setting == 'y' else 'No'}")
+                print("💡 When enabled, audio files are deleted after full transcription")
+                print("💡 When disabled, audio files are kept for reprocessing")
+                print("⚠️ Restart the script to use the new setting")
+        
+        elif choice == "7":
             break
         else:
-            print("❌ Invalid choice. Please select 1-6.")
+            print("❌ Invalid choice. Please select 1-7.")
 
 def ai_settings():
     """AI settings submenu"""

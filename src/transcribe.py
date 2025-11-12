@@ -77,6 +77,7 @@ OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
+AUTO_CLEANUP_AUDIO = os.getenv("AUTO_CLEANUP_AUDIO", "true").lower() == "true"  # Default true for clean workspace
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
@@ -301,7 +302,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             transcript_manager=file_manager,
             audio_manager=audio_manager,
             summarization_service=summarizer,
-            auto_cleanup=True
+            auto_cleanup=AUTO_CLEANUP_AUDIO
         )
         enhancer.task_completed_callback = enhancement_completed
         
@@ -420,7 +421,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         else:
             print("🔴 Recording... Press Enter to stop, or Ctrl+C to cancel.")
         
-        print("💡 If Enter doesn't work, use Ctrl+C to stop recording safely.")
+        
         
         # Start recording with sounddevice
         audio_buffer.start_recording()
@@ -685,7 +686,7 @@ def main(args=None):
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
         pyperclip.copy(transcribed_text)
-        print("📋 Transcription copied to clipboard.")
+        print("📋 Transcription copied to clipboard.\n\n")
 
     # 4. Save transcript with default filename first, then let AI rename it
     # Check if streaming already created a transcript file
