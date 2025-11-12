@@ -310,9 +310,8 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
     except Exception as e:
         if not verbose:
             indicator.stop()
-            indicator.join()
         print(f"❌ Failed to initialize streaming components: {e}")
-        return None, None
+        return None, None, None, None
     
     # Audio file writer for master file
     audio_writer = None
@@ -335,8 +334,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
     if not initialize_audio_writer():
         if not verbose:
             indicator.stop()
-            indicator.join()
-        return None, None
+        return None, None, None, None
     
     def keyboard_listener():
         """Listen for user input to stop recording."""
@@ -415,7 +413,6 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         # Stop initialization indicator
         if not verbose:
             indicator.stop()
-            indicator.join()
         
         # Platform-specific instructions
         if sys.platform == "darwin":  # macOS
@@ -610,7 +607,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             error_message=str(e)
         )
         safety_net.complete_session(session_id, success=False)
-        return None, None
+        return None, None, None, None
     
     finally:
         # Cleanup
