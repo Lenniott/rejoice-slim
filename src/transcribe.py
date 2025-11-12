@@ -16,8 +16,11 @@ import time
 from scipy.io.wavfile import write
 from datetime import datetime
 from dotenv import load_dotenv
-import pyperclip
 import tempfile
+import shutil
+import wave
+from pathlib import Path
+import pyperclip
 import argparse
 import threading
 import queue
@@ -27,20 +30,26 @@ import signal
 import select
 import termios
 import tty
-from typing import Optional, Dict, Any
-
-# Import our new chunking components
-from audio_chunker import AudioChunker
-from transcription_worker import TranscriptionWorkerPool
-from vad_service import VADService
+from typing import Optional, Dict, Any, Tuple
 
 # Import our new ID-based transcript management
-from transcript_manager import TranscriptFileManager
+from transcript_manager import TranscriptFileManager, AudioFileManager
 from id_generator import TranscriptIDGenerator
 from file_header import TranscriptHeader
 
 # Import summarization service
 from summarization_service import SummarizationService
+
+# Import streaming transcription components
+from audio_buffer import CircularAudioBuffer
+from volume_segmenter import VolumeSegmenter, SegmentProcessor
+from quick_transcript import QuickTranscriptAssembler
+from background_enhancer import BackgroundEnhancer
+from loading_indicator import LoadingIndicator
+from safety_net import SafetyNetManager, SafetyNetIntegrator
+
+# Import VAD service for auto-stop
+from vad_service import VADService
 
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -57,17 +66,15 @@ OLLAMA_API_URL = "http://localhost:11434/api/generate"
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
 
-# Real-time chunking configuration
-CHUNK_DURATION_SECONDS = float(os.getenv("CHUNK_DURATION_SECONDS", "10"))
+# Streaming transcription configuration (now the default)
+STREAMING_BUFFER_SIZE_SECONDS = int(os.getenv("STREAMING_BUFFER_SIZE_SECONDS", "300"))  # 5 minutes
+STREAMING_MIN_SEGMENT_DURATION = int(os.getenv("STREAMING_MIN_SEGMENT_DURATION", "30"))  # 30 seconds
+STREAMING_TARGET_SEGMENT_DURATION = int(os.getenv("STREAMING_TARGET_SEGMENT_DURATION", "60"))  # 60 seconds
+STREAMING_MAX_SEGMENT_DURATION = int(os.getenv("STREAMING_MAX_SEGMENT_DURATION", "90"))  # 90 seconds
+STREAMING_VERBOSE = os.getenv("STREAMING_VERBOSE", "false").lower() == "true"
+
+# Legacy configuration (for compatibility)
 SILENCE_DURATION_SECONDS = int(os.getenv("SILENCE_DURATION_SECONDS", "120"))
-
-# Hardcoded advanced settings (optimized defaults)
-CHUNK_OVERLAP_SECONDS = float(os.getenv("CHUNK_OVERLAP_SECONDS", "2.5"))
-TRANSCRIPTION_WORKER_THREADS = int(os.getenv("TRANSCRIPTION_WORKER_THREADS", "2"))
-MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "4"))
-
-# Calculate silence trigger chunks from duration
-SILENCE_TRIGGER_CHUNKS = int(SILENCE_DURATION_SECONDS / CHUNK_DURATION_SECONDS)
 
 # Audio device configuration
 DEFAULT_MIC_DEVICE = int(os.getenv("DEFAULT_MIC_DEVICE", "-1"))
@@ -469,35 +476,29 @@ def audio_settings():
 def advanced_performance_settings():
     """Advanced performance settings submenu"""
     while True:
-        print(f"\n⚡ Performance Settings")
-        print("─" * 25)
-        print(f"Chunk Duration: {os.getenv('CHUNK_DURATION_SECONDS', '10')} seconds")
-        print(f"No Speech Detection: {os.getenv('SILENCE_DURATION_SECONDS', '120')} seconds")
-        print(f"\n1. Change Chunk Duration")
-        print(f"2. Change No Speech Detection Duration")
-        print(f"3. ← Back to Main Menu")
+        # Read current streaming settings (streaming is now always active)
+        current_verbose = os.getenv('STREAMING_VERBOSE', 'false').lower() == 'true'
+        current_buffer = int(os.getenv('STREAMING_BUFFER_SIZE_SECONDS', '300'))
+        current_min = int(os.getenv('STREAMING_MIN_SEGMENT_DURATION', '30'))
+        current_target = int(os.getenv('STREAMING_TARGET_SEGMENT_DURATION', '60'))
+        current_max = int(os.getenv('STREAMING_MAX_SEGMENT_DURATION', '90'))
         
-        choice = input("\n👉 Choose option (1-3): ").strip()
+        print(f"\n⚡ Streaming Performance Settings")
+        print("─" * 35)
+        print(f"Mode: Streaming (active)")
+        print(f"No Speech Detection: {os.getenv('SILENCE_DURATION_SECONDS', '120')} seconds")
+        print(f"Streaming Buffer: {current_buffer}s ({current_buffer//60}m {current_buffer%60}s)")
+        print(f"Streaming Segments: {current_min}s-{current_target}s-{current_max}s (min-target-max)")
+        print(f"Streaming Verbose: {'Yes' if current_verbose else 'No'}")
+        print(f"\n1. Change No Speech Detection Duration")
+        print(f"2. Configure Streaming Buffer Size")
+        print(f"3. Configure Streaming Segment Durations")
+        print(f"4. Toggle Streaming Verbose Mode")
+        print(f"5. ← Back to Main Menu")
+        
+        choice = input("\n👉 Choose option (1-5): ").strip()
         
         if choice == "1":
-            current_duration = int(os.getenv('CHUNK_DURATION_SECONDS', '10'))
-            new_duration = input(f"Enter chunk duration in seconds (5-30) [current: {current_duration}]: ").strip()
-            try:
-                duration = int(new_duration) if new_duration else current_duration
-                if 5 <= duration <= 30:
-                    if duration < 8:
-                        print("ℹ️ Shorter duration = more frequent updates")
-                    elif duration > 15:
-                        print("ℹ️ Longer duration = less frequent updates")
-                    update_env_setting("CHUNK_DURATION_SECONDS", str(duration))
-                    print(f"✅ Chunk duration changed to: {duration} seconds")
-                    print("⚠️ Restart the script to use the new setting")
-                else:
-                    print("❌ Duration must be between 5 and 30 seconds")
-            except ValueError:
-                print("❌ Please enter a valid number")
-        
-        elif choice == "2":
             current_silence = int(os.getenv('SILENCE_DURATION_SECONDS', '120'))
             new_silence = input(f"Enter no speech detection duration in seconds (30-300) [current: {current_silence}]: ").strip()
             try:
@@ -514,10 +515,67 @@ def advanced_performance_settings():
             except ValueError:
                 print("❌ Please enter a valid number")
         
+        elif choice == "2":
+            print(f"\nCurrent buffer size: {current_buffer} seconds ({current_buffer//60}m {current_buffer%60}s)")
+            print("Recommended buffer sizes:")
+            print("  • 180s (3m)  - Short sessions, low memory")
+            print("  • 300s (5m)  - Balanced (default)")
+            print("  • 600s (10m) - Long sessions, high quality")
+            
+            new_buffer = input(f"Enter buffer size in seconds (60-1200) [current: {current_buffer}]: ").strip()
+            try:
+                buffer = int(new_buffer) if new_buffer else current_buffer
+                if 60 <= buffer <= 1200:
+                    minutes = buffer // 60
+                    seconds = buffer % 60
+                    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+                    update_env_setting("STREAMING_BUFFER_SIZE_SECONDS", str(buffer))
+                    print(f"✅ Streaming buffer size changed to: {buffer} seconds ({time_str})")
+                    print("⚠️ Restart the script to use the new setting")
+                else:
+                    print("❌ Buffer size must be between 60 and 1200 seconds")
+            except ValueError:
+                print("❌ Please enter a valid number")
+        
         elif choice == "3":
+            print(f"\nCurrent segment durations: {current_min}s-{current_target}s-{current_max}s")
+            print("Segment duration rules:")
+            print("  • Min: Shortest allowed segment (avoid noise)")
+            print("  • Target: Preferred segment length (optimal for Whisper)")
+            print("  • Max: Force break point (prevent memory issues)")
+            
+            new_min = input(f"Enter minimum duration (10-60s) [current: {current_min}]: ").strip()
+            new_target = input(f"Enter target duration (30-120s) [current: {current_target}]: ").strip()
+            new_max = input(f"Enter maximum duration (60-180s) [current: {current_max}]: ").strip()
+            
+            try:
+                min_dur = int(new_min) if new_min else current_min
+                target_dur = int(new_target) if new_target else current_target
+                max_dur = int(new_max) if new_max else current_max
+                
+                if (10 <= min_dur <= 60 and 30 <= target_dur <= 120 and 60 <= max_dur <= 180 and
+                    min_dur <= target_dur <= max_dur):
+                    update_env_setting("STREAMING_MIN_SEGMENT_DURATION", str(min_dur))
+                    update_env_setting("STREAMING_TARGET_SEGMENT_DURATION", str(target_dur))
+                    update_env_setting("STREAMING_MAX_SEGMENT_DURATION", str(max_dur))
+                    print(f"✅ Segment durations changed to: {min_dur}s-{target_dur}s-{max_dur}s")
+                    print("⚠️ Restart the script to use the new settings")
+                else:
+                    print("❌ Invalid durations. Ensure: 10≤min≤60, 30≤target≤120, 60≤max≤180, min≤target≤max")
+            except ValueError:
+                print("❌ Please enter valid numbers")
+        
+        elif choice == "4":
+            new_verbose = input("Enable streaming verbose mode? (y/n): ").lower()
+            if new_verbose in ['y', 'n']:
+                update_env_setting("STREAMING_VERBOSE", 'true' if new_verbose == 'y' else 'false')
+                print(f"✅ Streaming verbose mode changed to: {'Yes' if new_verbose == 'y' else 'No'}")
+                print("⚠️ Restart the script to use the new setting")
+        
+        elif choice == "5":
             break
         else:
-            print("❌ Invalid choice. Please select 1-3.")
+            print("❌ Invalid choice. Please select 1-5.")
 
 def command_settings():
     """Command settings submenu"""
@@ -709,6 +767,102 @@ _global_recording_state = {
     'original_handler': None
 }
 
+# Session management helper functions
+def cleanup_session_file(audio_writer, session_file):
+    """Clean up session file and writer"""
+    if audio_writer:
+        try:
+            audio_writer.close()
+        except:
+            pass
+    
+    try:
+        if session_file.exists():
+            session_file.unlink()
+    except:
+        pass
+
+def preserve_session_for_recovery(session_file, session_id, reason):
+    """Preserve session file for recovery"""
+    if not session_file.exists():
+        return
+    
+    file_size = session_file.stat().st_size
+    duration = file_size / (SAMPLE_RATE * 2) if file_size > 0 else 0
+    
+    print(f"💾 Audio session preserved: {session_file.name}")
+    print(f"📊 Duration: {duration:.1f}s, Size: {file_size/1024/1024:.1f}MB")
+    print(f"🔧 Reason: {reason}")
+    print(f"🔄 Recover with: python transcribe.py --recover {session_id}")
+
+def transcribe_session_file(session_file, whisper_model):
+    """Transcribe a complete session file"""
+    try:
+        # Read WAV file directly using wave module
+        with wave.open(str(session_file), 'rb') as wav_file:
+            frames = wav_file.readframes(-1)
+            sample_rate = wav_file.getframerate()
+            n_channels = wav_file.getnchannels()
+            
+        # Convert bytes to numpy array
+        audio_data = np.frombuffer(frames, dtype=np.int16)
+        
+        # Convert to float32 normalized to [-1, 1]
+        audio_data = audio_data.astype(np.float32) / 32767.0
+        
+        # Handle stereo to mono conversion if needed
+        if n_channels > 1:
+            audio_data = audio_data.reshape(-1, n_channels).mean(axis=1)
+        
+        if len(audio_data) < 1600:  # Less than 0.1 seconds
+            return None
+        
+        # Resample if needed (Whisper expects 16kHz)
+        if sample_rate != SAMPLE_RATE:
+            # Simple resampling - for production use scipy.signal.resample
+            ratio = SAMPLE_RATE / sample_rate
+            new_length = int(len(audio_data) * ratio)
+            audio_data = np.interp(
+                np.linspace(0, len(audio_data), new_length),
+                np.arange(len(audio_data)),
+                audio_data
+            )
+        
+        if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+            result = whisper_model.transcribe(audio_data, fp16=False, language=WHISPER_LANGUAGE)
+        else:
+            result = whisper_model.transcribe(audio_data, fp16=False)
+        
+        return result["text"]
+        
+    except Exception as e:
+        print(f"❌ Session transcription failed: {e}")
+        return None
+
+def cleanup_services_with_timeout(worker_pool, vad_service, timeout=1.0):
+    """Cleanup services with aggressive timeout protection"""
+    try:
+        def cleanup():
+            try:
+                if worker_pool:
+                    worker_pool.stop()
+            except:
+                pass
+            try:
+                if vad_service:
+                    vad_service.stop_recording()
+            except:
+                pass
+        
+        stop_thread = threading.Thread(target=cleanup)
+        stop_thread.start()
+        stop_thread.join(timeout=timeout)
+        
+        if stop_thread.is_alive():
+            print("⚠️ Service cleanup timed out (continuing anyway)")
+    except:
+        pass
+
 def _global_signal_handler(signum, frame):
     """Global signal handler for Ctrl+C."""
     try:
@@ -729,292 +883,410 @@ def _global_signal_handler(signum, frame):
         if _global_recording_state['recording_event']:
             _global_recording_state['recording_event'].clear()
 
-def record_audio_chunked(device_override: Optional[int] = None) -> Optional[str]:
+def record_audio_streaming(device_override: Optional[int] = None, verbose: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
     """
-    Records audio with real-time chunking and transcription.
+    Records audio using the new streaming transcription system.
+    Simplified version using sounddevice for compatibility.
     
     Returns:
-        str or None: Complete assembled transcript, or None if recording failed or cancelled
+        Tuple[Optional[str], Optional[Path]]: (transcribed_text, master_audio_file_path)
     """
-    # Platform-specific messaging for keyboard shortcuts
-    if sys.platform == "darwin":  # macOS
-        print("🔴 Recording... Press Enter to stop, Ctrl+C (^C) to cancel.")
-    else:
-        print("🔴 Recording... Press Enter to stop, Ctrl+C to cancel.")
+    # Suppress all logging unless verbose mode is enabled
+    if not verbose:
+        import logging
+        logging.getLogger('audio_buffer').setLevel(logging.ERROR)
+        logging.getLogger('volume_segmenter').setLevel(logging.ERROR)
+        logging.getLogger('safety_net').setLevel(logging.ERROR)
+        logging.getLogger('quick_transcript').setLevel(logging.ERROR)
+        logging.getLogger('background_enhancer').setLevel(logging.ERROR)
+        logging.getLogger('audio_manager').setLevel(logging.ERROR)
+        import warnings
+        warnings.filterwarnings("ignore")
+    
+    # Generate session ID
+    session_id = f"stream_{int(time.time())}"
+    
+    # Create master audio file for safety net
+    temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
+    temp_audio_dir.mkdir(exist_ok=True)
+    master_audio_file = temp_audio_dir / f"{session_id}.wav"
     
     # Initialize components
-    chunker = AudioChunker(
-        chunk_duration_seconds=CHUNK_DURATION_SECONDS,
-        overlap_seconds=CHUNK_OVERLAP_SECONDS,
-        sample_rate=SAMPLE_RATE
-    )
-    
-    # Load Whisper model with clean interruption handling
     try:
-        whisper_model = whisper.load_model(WHISPER_MODEL)
-    except KeyboardInterrupt:
-        if sys.platform == "darwin":  # macOS
-            print("\n🚫 Loading cancelled by user (Ctrl+C).")
-        else:
-            print("\n🚫 Loading cancelled by user.")
-        return None
-    except Exception as e:
-        print(f"\n❌ Error loading Whisper model: {e}")
-        return None
-    
-    # Initialize worker pool
-    try:
-        worker_pool = TranscriptionWorkerPool(
-            whisper_model=whisper_model,
-            whisper_language=WHISPER_LANGUAGE,
-            num_workers=TRANSCRIPTION_WORKER_THREADS,
-            max_retry_attempts=MAX_RETRY_ATTEMPTS
+        # Audio buffer (5-minute rolling buffer)
+        audio_buffer = CircularAudioBuffer(
+            capacity_seconds=STREAMING_BUFFER_SIZE_SECONDS,
+            sample_rate=SAMPLE_RATE,
+            channels=1
         )
         
-        # Initialize VAD service
-        vad_service = VADService(
-            silence_threshold_chunks=SILENCE_TRIGGER_CHUNKS,
-            chunk_duration_seconds=CHUNK_DURATION_SECONDS
+        # Volume segmenter with configurable durations
+        from volume_segmenter import VolumeConfig
+        volume_config = VolumeConfig(
+            min_segment_duration=STREAMING_MIN_SEGMENT_DURATION,
+            target_segment_duration=STREAMING_TARGET_SEGMENT_DURATION,
+            max_segment_duration=STREAMING_MAX_SEGMENT_DURATION
         )
-    except KeyboardInterrupt:
-        if sys.platform == "darwin":  # macOS
-            print("\n🚫 Initialization cancelled by user (Ctrl+C).")
-        else:
-            print("\n🚫 Initialization cancelled by user.")
-        return None
-    except Exception as e:
-        print(f"\n❌ Error during initialization: {e}")
-        return None
-    
-    # Threading control
-    recording_event = threading.Event()
-    recording_event.set()
-    stop_event = threading.Event()
-    cancelled = threading.Event()
-    
-    # Audio data collection
-    audio_data = []
-    
-    # Keyboard handling setup
-    fd, old_settings = setup_keyboard_handler()
-    
-    # Set up global signal handler (only works in main thread)
-    try:
-        _global_recording_state['recording_event'] = recording_event
-        _global_recording_state['cancelled'] = cancelled
-        _global_recording_state['original_handler'] = signal.signal(signal.SIGINT, _global_signal_handler)
-        signal_handler_setup = True
-    except ValueError as e:
-        # Not in main thread - can't set up signal handler
-        print("⚠️  Note: Ctrl+C handling not available (not in main thread)")
-        signal_handler_setup = False
-    
-    def audio_callback(indata, frames, time, status):
-        """Callback for sounddevice audio stream."""
-        # Removed status printing that was causing spacing issues
+        volume_segmenter = VolumeSegmenter(
+            audio_buffer=audio_buffer,
+            config=volume_config,
+            verbose=verbose
+        )
         
-        if recording_event.is_set():
-            # Convert 2D array (channels x samples) to 1D array (samples)
-            audio_1d = indata.flatten()
-            audio_data.append(audio_1d.copy())
-            chunker.add_audio_data(audio_1d.copy())
+        # Initialize audio segment processor
+        segment_extractor = SegmentProcessor(audio_buffer)
+        
+        # Determine audio device
+        device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
+        
+        # Initialize safety net
+        safety_net = SafetyNetManager(
+            safety_log_path=os.path.join(SAVE_PATH or ".", "safety_log.json"),
+            auto_recovery=True,
+            max_retry_attempts=3
+        )
+        
+        # Start safety net session
+        safety_record = safety_net.start_session(session_id, str(master_audio_file))
+        streaming_attempt = safety_net.register_processing_attempt(
+            session_id, "streaming", {"buffer_size": STREAMING_BUFFER_SIZE_SECONDS}
+        )
+        
+        # Quick transcript assembler
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        audio_manager = AudioFileManager(SAVE_PATH)
+        assembler = QuickTranscriptAssembler(
+            transcript_manager=file_manager,
+            audio_manager=audio_manager,
+            auto_clipboard=AUTO_COPY
+        )
+        
+        # Background enhancer for quality improvement
+        summarizer = SummarizationService(
+            ollama_model=OLLAMA_MODEL,
+            ollama_timeout=OLLAMA_TIMEOUT,
+            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+        )
+        def enhancement_completed(task):
+            """Callback when background enhancement completes."""
+            print(f"🎯 Background complete: enhanced transcript saved, audio cleaned up")
+        
+        enhancer = BackgroundEnhancer(
+            transcript_manager=file_manager,
+            audio_manager=audio_manager,
+            summarization_service=summarizer,
+            auto_cleanup=True
+        )
+        enhancer.task_completed_callback = enhancement_completed
+        
+        # Initialize components without logging details
+        
+    except Exception as e:
+        print(f"❌ Failed to initialize streaming components: {e}")
+        return None, None
     
-    def process_ready_chunks():
-        """Process chunks as they become available."""
-        while recording_event.is_set():
-            try:
-                chunks_processed = 0
-                for chunk in chunker.get_ready_chunks():
-                    # Send to transcription workers
-                    worker_pool.add_chunk(chunk)
-                    chunks_processed += 1
-                    
-                    # Send to VAD service
-                    vad_service.analyze_chunk(chunk)
-                
-                # Chunk processing happens silently in background
-                
-                # Small delay to prevent busy waiting
-                threading.Event().wait(0.1)
-            except Exception as e:
-                logging.error(f"Error processing chunks: {e}")
-                break
+    # Audio file writer for master file
+    audio_writer = None
+    recording_active = threading.Event()
+    recording_active.set()
+    user_stopped = threading.Event()
+    
+    def initialize_audio_writer():
+        nonlocal audio_writer
+        try:
+            audio_writer = wave.open(str(master_audio_file), 'wb')
+            audio_writer.setnchannels(1)
+            audio_writer.setsampwidth(2)
+            audio_writer.setframerate(SAMPLE_RATE)
+            return True
+        except Exception as e:
+            print(f"❌ Failed to initialize master audio file: {e}")
+            return False
+    
+    if not initialize_audio_writer():
+        return None, None
     
     def keyboard_listener():
-        """Listen for keyboard input in a separate thread."""
+        """Listen for user input to stop recording."""
         try:
-            # Try advanced keyboard handling first
-            if fd is not None:
-                while recording_event.is_set() and not cancelled.is_set():
-                    if check_keyboard_input(fd):
-                        char = get_keyboard_char()
-                        if char == '\r' or char == '\n':  # Enter key
-                            print("✅ Recording stopped by user.")
-                            sys.stdout.flush()
-                            recording_event.clear()
-                            break
-                        elif ord(char) == 3:  # Ctrl+C (ASCII 3)
-                            print("🚫 Recording cancelled by user (Ctrl+C detected in keyboard listener).")
-                            cancelled.set()
-                            recording_event.clear()
-                            break
-                    threading.Event().wait(0.1)  # Small delay to prevent busy waiting
-            else:
-                # Fallback to simple input() for environments that don't support raw terminal
+            # Use a simpler approach that works better with audio callbacks
+            while recording_active.is_set():
                 try:
-                    input()  # This will block until Enter is pressed
-                    if recording_event.is_set():  # Only stop if still recording
-                        print("✅ Recording stopped by user.")
-                        sys.stdout.flush()
-                        recording_event.clear()
-                except (EOFError, KeyboardInterrupt):
-                    if recording_event.is_set():
-                        print("🚫 Recording cancelled by user.")
-                        cancelled.set()
-                        recording_event.clear()
-        except KeyboardInterrupt:
-            # Backup Ctrl+C handling in keyboard listener
-            print("🚫 Recording cancelled by user (Ctrl+C in keyboard thread).")
-            cancelled.set()
-            recording_event.clear()
+                    # Check for input without blocking indefinitely
+                    import select
+                    import sys
+                    
+                    if sys.stdin in select.select([sys.stdin], [], [], 0.5)[0]:
+                        line = input()
+                        if recording_active.is_set():
+                            print("\n✅ Recording stopped by user.")
+                            user_stopped.set()
+                            recording_active.clear()
+                            break
+                except (select.error, OSError):
+                    # Fallback for systems where select doesn't work
+                    try:
+                        input()
+                        if recording_active.is_set():
+                            print("\n✅ Recording stopped by user.")
+                            user_stopped.set()
+                            recording_active.clear()
+                            break
+                    except (EOFError, KeyboardInterrupt):
+                        if recording_active.is_set():
+                            print("\n🚫 Recording cancelled by user.")
+                            user_stopped.set()
+                            recording_active.clear()
+                            break
+                time.sleep(0.1)
+        except (EOFError, KeyboardInterrupt):
+            if recording_active.is_set():
+                print("\n🚫 Recording cancelled by user.")
+                user_stopped.set()
+                recording_active.clear()
+    
+    def audio_callback(indata, frames, time_info, status):
+        """Process incoming audio data."""
+        if not recording_active.is_set():
+            return
+            
+        try:
+            # Convert to flat mono array
+            audio_data = indata.flatten()
+            
+            # Write to master file immediately
+            audio_16bit = (audio_data * 32767).astype(np.int16)
+            audio_writer.writeframes(audio_16bit.tobytes())
+            audio_writer._file.flush()
+            
+            # Add to circular buffer for streaming
+            audio_buffer.write(audio_data)
+            
+            # Optional verbose monitoring
+            if verbose and hasattr(audio_callback, 'call_count'):
+                audio_callback.call_count += 1
+                if audio_callback.call_count % 100 == 0:  # Every ~2 seconds
+                    duration = audio_callback.call_count * frames / SAMPLE_RATE
+                    print(f"🎙️  Recording: {duration:.1f}s", end='\r', flush=True)
+            elif verbose:
+                audio_callback.call_count = 1
+                
         except Exception as e:
-            logging.error(f"Keyboard listener error: {e}")
-            # Final fallback - just wait for a bit and let other controls handle stopping
-            pass
+            if verbose:
+                print(f"⚠️ Audio callback error: {e}")
     
     try:
-        # Start worker pool
-        worker_pool.start()
-        vad_service.start_recording()
-        
-        # Start chunk processing thread
-        chunk_thread = threading.Thread(target=process_ready_chunks, daemon=True)
-        chunk_thread.start()
-        
-        # Start keyboard listener thread
+        # Start keyboard listener
         keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
         keyboard_thread.start()
         
-        # Start audio recording with configured device (or override)
-        device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
-        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=audio_callback, device=device)
+        # Platform-specific instructions
+        if sys.platform == "darwin":  # macOS
+            print("🔴 Recording... Press Enter to stop, or Ctrl+C (^C) to cancel.")
+        else:
+            print("🔴 Recording... Press Enter to stop, or Ctrl+C to cancel.")
+        
+        print("💡 If Enter doesn't work, use Ctrl+C to stop recording safely.")
+        
+        # Start recording with sounddevice
+        audio_buffer.start_recording()
+        volume_segmenter.start_analysis()
+        assembler.start_session(session_id)
+        
+        stream = sd.InputStream(
+            samplerate=SAMPLE_RATE, 
+            channels=1, 
+            callback=audio_callback,
+            device=device,
+            blocksize=1024
+        )
         stream.start()
         
-        # Wait for recording to be stopped (by Enter key, Ctrl+C, or other means)
-        try:
-            while recording_event.is_set() and not cancelled.is_set():
-                threading.Event().wait(0.05)  # Check more frequently
-        except KeyboardInterrupt:
-            # Backup Ctrl+C handling in case signal handler doesn't work
-            if sys.platform == "darwin":  # macOS
-                print("🚫 Recording cancelled by user (Ctrl+C).")
-            else:
-                print("🚫 Recording cancelled by user.")
-            cancelled.set()
-            recording_event.clear()
+        # Monitor recording with live feedback
+        start_time = time.time()
+        last_status_time = time.time()
+        segments_processed = 0
+        
+        while recording_active.is_set():
+            current_time = time.time()
+            duration = current_time - start_time
+            
+            # Process completed segments
+            try:
+                # First, analyze audio to detect new segments
+                new_segments = volume_segmenter.analyze_and_segment()
+                if verbose and new_segments:
+                    print(f"\n🔍 Detected {len(new_segments)} new segments")
+                
+                # Get all detected segments
+                completed_segments = volume_segmenter.get_detected_segments()
+                        
+                for segment_info in completed_segments[segments_processed:]:
+                    try:
+                        # Extract audio data for this segment
+                        audio_data = segment_extractor.extract_segment_audio(segment_info)
+                        if audio_data is not None:
+                            assembler.add_segment_for_transcription(segment_info, audio_data)
+                            segments_processed += 1
+                            if verbose:
+                                print(f"\n📦 Processed segment {segments_processed}: {segment_info.duration:.1f}s")
+                        else:
+                            if verbose:
+                                print(f"⚠️ Could not extract audio for segment {segments_processed}")
+                    except Exception as e:
+                        if verbose:
+                            print(f"⚠️ Segment processing error: {e}")
+            except Exception as e:
+                if verbose:
+                    print(f"⚠️ Segmentation error: {e}")
+            
+            # Sleep briefly to prevent excessive CPU usage
+            time.sleep(0.1)
+            
+            time.sleep(0.5)  # Check frequently for responsiveness
         
         # Stop recording
         stream.stop()
         stream.close()
+
+        # Close audio writer
+        if audio_writer:
+            audio_writer.close()
+            audio_writer = None
+
+        audio_buffer.stop_recording()
+        volume_segmenter.stop_analysis()
         
-        # Brief pause to ensure audio stream cleanup is complete
-        time.sleep(0.1)
-        
-        # Check if recording was cancelled
-        if cancelled.is_set():
-            print("Recording cancelled. No file will be saved.")
-            return None
-        
-        # Stop recording
-        recording_event.clear()
-        
-        # Process final partial chunk
-        final_chunk = chunker.get_final_chunk()
-        if final_chunk is not None:
-            worker_pool.add_chunk(final_chunk)
-            vad_service.analyze_chunk(final_chunk)
-        
-        # Wait for all workers to finish
-        print()
-        print("⏳ Finalizing transcription...")
-        
-        # Add timeout protection for cleanup phase
-        cleanup_start = time.time()
-        max_cleanup_time = 10.0  # 10 seconds max for cleanup
-        
-        # Stop worker pool with timeout to prevent hanging
-        try:
-            worker_pool.stop()
-        except Exception as e:
-            print(f"⚠️ Worker pool cleanup issue: {e}")
-        
-        # Check if cleanup is taking too long
-        if time.time() - cleanup_start > max_cleanup_time:
-            print("⚠️ Cleanup taking too long, forcing completion")
-            return "Cleanup timeout - recording may have been too short"
+        # Start loading indicator for processing
+        loader = LoadingIndicator("🎤 Processing audio...")
+        loader.start()
         
         try:
-            vad_service.stop_recording()
-        except Exception as e:
-            print(f"⚠️ VAD service cleanup issue: {e}")
-        
-        # Get assembled transcript
-        try:
-            transcript = worker_pool.get_assembled_transcript()
-        except Exception as e:
-            print(f"⚠️ Transcript assembly issue: {e}")
-            transcript = ""
-        
-        # If no chunks were processed, fall back to transcribing the full audio
-        if not transcript.strip() and audio_data:
+            # Process any final segments
+            loader.update("🔍 Analyzing segments...")
+            
             try:
-                full_audio = np.concatenate(audio_data, axis=0)
-                
-                if len(full_audio) < 1600:  # Less than 0.1 seconds at 16kHz
-                    print("⚠️ Audio too short for transcription")
-                    return None
-                    
-                if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
-                    result = whisper_model.transcribe(full_audio, fp16=False, language=WHISPER_LANGUAGE)
-                else:
-                    result = whisper_model.transcribe(full_audio, fp16=False)
-                transcript = result["text"].strip()
-                print("✅ Full audio transcription completed")
+                # Force flush any remaining segment
+                final_segment = volume_segmenter.flush_remaining_segment()
+
+                # Get any remaining segments
+                final_segments = volume_segmenter.get_detected_segments()
+                        
+                for segment_info in final_segments[segments_processed:]:
+                    try:
+                        # Extract audio data for this segment
+                        audio_data = segment_extractor.extract_segment_audio(segment_info)
+                        if audio_data is not None:
+                            assembler.add_segment_for_transcription(segment_info, audio_data)
+                            segments_processed += 1
+                            if verbose:
+                                print(f"📦 Final segment: {segment_info.duration:.1f}s")
+                        else:
+                            if verbose:
+                                print(f"⚠️ Could not extract final segment audio")
+                    except Exception as e:
+                        if verbose:
+                            print(f"⚠️ Final segment error: {e}")
             except Exception as e:
-                print(f"❌ Full audio transcription failed: {e}")
-                return None
+                if verbose:
+                    print(f"⚠️ Final processing error: {e}")
+            
+            # Finalize quick transcript
+            loader.update("📝 Finalizing transcript...")
+            quick_transcript = assembler.finalize_transcript()
+            
+            # Check if we have real transcription content (not just placeholder)
+            has_real_content = (quick_transcript and 
+                               quick_transcript.transcript_text and 
+                               quick_transcript.transcript_text.strip() and
+                               quick_transcript.transcript_text.strip() != "[No transcription content available]")
+            
+            if has_real_content:
+                # Mark streaming attempt as successful
+                safety_net.complete_processing_attempt(
+                    session_id, streaming_attempt, 
+                    output_files=[quick_transcript.file_path] if quick_transcript.file_path else [],
+                    success=True
+                )
+                
+                # Start background enhancement
+                enhancement_attempt = safety_net.register_processing_attempt(
+                    session_id, "enhanced", {"master_audio": str(master_audio_file)}
+                )
+                
+                enhancer.queue_enhancement(quick_transcript, str(master_audio_file))
+                
+                # Complete safety net session
+                safety_net.complete_session(session_id, success=True, 
+                                           final_output_files=[str(master_audio_file)])
+                
+                loader.stop()  # Clear loading indicator
+                return quick_transcript.transcript_text.strip(), master_audio_file, quick_transcript.file_path, quick_transcript.transcript_id
+                
+            else:
+                # Streaming failed - fall back to full-file transcription
+                loader.update("🔄 Running fallback transcription...")
+                
+                # Mark streaming attempt as failed
+                safety_net.complete_processing_attempt(
+                    session_id, streaming_attempt, success=False,
+                    error_message="No segments detected"
+                )
+                
+                # Try full-file Whisper transcription as fallback
+                try:
+                    import whisper
+                    whisper_model = whisper.load_model(WHISPER_MODEL)
+                    result = whisper_model.transcribe(str(master_audio_file), language=WHISPER_LANGUAGE)
+                    fallback_text = result['text'].strip()
+                    
+                    if fallback_text:
+                        
+                        # Mark fallback as successful
+                        fallback_attempt = safety_net.register_processing_attempt(
+                            session_id, "fallback", {"audio_file": str(master_audio_file)}
+                        )
+                        safety_net.complete_processing_attempt(
+                            session_id, fallback_attempt, success=True,
+                            output_files=[str(master_audio_file)]
+                        )
+                        safety_net.complete_session(session_id, success=True, 
+                                                   final_output_files=[str(master_audio_file)])
+                        
+                        loader.stop()  # Clear loading indicator
+                        return fallback_text, master_audio_file, None, None
+                    
+                except Exception as fallback_error:
+                    pass
+                
+                # Both streaming and fallback failed
+                safety_net.complete_session(session_id, success=False)
+                loader.stop()  # Clear loading indicator
+                return None, None, None, None
         
-        if not transcript.strip():
-            print("No speech detected in the audio.")
-            return None
-        
-        # Transcription complete - no need to show chunk statistics
-        
-        return transcript
+        except Exception as e:
+            loader.stop()  # Clear loading indicator on error
+            raise
+            
+    except KeyboardInterrupt:
+        return None, None, None, None
         
     except Exception as e:
-        print(f"An error occurred during recording: {e}")
-        logging.error(f"Recording error: {e}")
-        return None
+        safety_net.complete_processing_attempt(
+            session_id, streaming_attempt, success=False,
+            error_message=str(e)
+        )
+        safety_net.complete_session(session_id, success=False)
+        return None, None
+    
     finally:
-        # Ensure cleanup
-        recording_event.clear()
-        
-        # Restore terminal settings
-        restore_keyboard_handler(fd, old_settings)
-        
-        # Restore original signal handler
-        if signal_handler_setup and _global_recording_state['original_handler']:
-            signal.signal(signal.SIGINT, _global_recording_state['original_handler'])
-            _global_recording_state['original_handler'] = None
-            _global_recording_state['recording_event'] = None
-            _global_recording_state['cancelled'] = None
-        
-        # Clean up components
-        if 'worker_pool' in locals():
-            worker_pool.stop()
-        if 'vad_service' in locals():
-            vad_service.stop_recording()
+        # Cleanup
+        try:
+            if audio_writer:
+                audio_writer.close()
+        except:
+            pass
+
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle file opening based on settings"""
@@ -1066,7 +1338,7 @@ def list_transcripts():
     """List all available transcripts with their IDs."""
     try:
         file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-        transcripts = file_manager.list_transcripts()
+        transcripts = file_manager.list_transcripts_with_audio()
         
         # Also check for legacy format files (only in SAVE_PATH)
         legacy_files = []
@@ -1096,10 +1368,15 @@ def list_transcripts():
         # Show new ID-format transcripts first
         if transcripts:
             print("🆔 New Format (ID-based):")
-            for transcript_id, filename, creation_date in transcripts:
+            print(f"   {'ID':<6} {'Created':<16} {'Audio':<8} {'Duration':<10} {'Filename'}")
+            print("   " + "─" * 80)
+            
+            for transcript_id, filename, creation_date, audio_count, total_duration in transcripts:
                 date_str = creation_date.strftime("%Y-%m-%d %H:%M")
-                print(f"   {filename} (ID: {transcript_id}, {date_str})")
-            print()
+                audio_str = f"{audio_count}" if audio_count > 0 else "-"
+                duration_str = f"{total_duration:.1f}s" if audio_count > 0 else "-"
+                print(f"   {transcript_id:<6} {date_str:<16} {audio_str:<8} {duration_str:<10} {filename}")
+            
         
         # Show legacy format transcripts
         if legacy_files:
@@ -1107,14 +1384,209 @@ def list_transcripts():
             for filename, mod_time in legacy_files:
                 date_str = mod_time.strftime("%Y-%m-%d %H:%M")
                 print(f"   {filename} ({date_str})")
-            print()
+            
         
         if transcripts:
-            print(f"💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
-        print(f"💡 New transcripts use format: descriptive-name_DDMMYYYY_000001.{OUTPUT_FORMAT}")
+            print(f"\n💡 Use 'rec -XXXXXX' to reference ID-based transcripts")
+            print(f"💡 Use 'rec --audio XXXXXX' to see audio files for a transcript")
+            print(f"💡 Use 'rec --reprocess XXXXXX' to reprocess all audio for a transcript")
+        print(f"💡 New transcripts use format: XXXXXX_DDMMYYYY_descriptive-name.{OUTPUT_FORMAT}")
+        print(f"💡 Use 'rec --reprocess-failed' to process orphaned audio files")
         
     except Exception as e:
         print(f"❌ Error listing transcripts: {e}")
+
+def transcribe_audio_file(audio_path: str) -> str:
+    """Transcribe a single audio file using the same method as the main transcription."""
+    from pathlib import Path
+    import whisper
+    
+    audio_file = Path(audio_path)
+    if not audio_file.exists():
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    
+    try:
+        # Load Whisper model
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+        
+        # Transcribe the audio file
+        result = whisper_model.transcribe(str(audio_file), verbose=False)
+        transcript_text = result.get('text', '').strip()
+        
+        return transcript_text if transcript_text else ""
+        
+    except Exception as e:
+        raise Exception(f"Transcription failed: {str(e)}")
+
+def reprocess_transcript_command(id_reference: str, overwrite_existing: bool = False):
+    """Reprocess all audio files for a specific transcript ID."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript ID has audio files
+        audio_files_info = file_manager.get_audio_files_for_transcript(id_reference)
+        if not audio_files_info:
+            print(f"❌ No audio files found for transcript ID {id_reference}")
+            return
+        
+        print(f"🎵 Found {len(audio_files_info)} audio files for transcript {id_reference}:")
+        for audio_info in audio_files_info:
+            filename = os.path.basename(audio_info['path'])
+            duration_str = f"{audio_info['duration']:.1f}s" if audio_info['exists'] else "Missing"
+            status = "✅" if audio_info['exists'] else "❌"
+            print(f"   {status} {filename} ({duration_str})")
+        
+        # Ask for confirmation
+        response = input(f"\n🔄 Reprocess {len(audio_files_info)} audio files? (y/N): ").strip().lower()
+        if response != 'y':
+            print("❌ Reprocessing cancelled")
+            return
+        
+        # Define summarization callback if AI is enabled
+        summarization_callback = None
+        if AUTO_METADATA:
+            try:
+                summarizer = SummarizationService(
+                    ollama_model=OLLAMA_MODEL,
+                    ollama_timeout=OLLAMA_TIMEOUT,
+                    max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+                )
+                if summarizer.check_ollama_available():
+                    def summarize_transcript(transcript_text: str) -> dict:
+                        """Generate AI summary and metadata."""
+                        return summarizer.get_metadata(transcript_text) or {}
+                    
+                    summarization_callback = summarize_transcript
+                else:
+                    print("⚠️ Ollama not available - skipping AI summarization")
+                    
+            except Exception as e:
+                print(f"⚠️ AI summarization not available: {str(e)}")
+        
+        # Perform reprocessing
+        success, transcript_path, processed_files = file_manager.reprocess_transcript_audio(
+            id_reference,
+            transcription_callback=transcribe_audio_file,
+            summarization_callback=summarization_callback,
+            overwrite_existing=overwrite_existing
+        )
+        
+        if success:
+            print(f"\n✅ Reprocessing completed successfully!")
+            print(f"📁 Transcript: {os.path.basename(transcript_path)}")
+            print(f"🎵 Processed {len(processed_files)} audio files:")
+            for filename in processed_files:
+                print(f"   - {filename}")
+        else:
+            print(f"\n❌ Reprocessing failed: {transcript_path}")
+    
+    except Exception as e:
+        print(f"❌ Error during reprocessing: {e}")
+
+def reprocess_failed_command():
+    """Reprocess all orphaned audio files."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Define summarization callback if AI is enabled
+        summarization_callback = None
+        if AUTO_METADATA:
+            try:
+                summarizer = SummarizationService(
+                    ollama_model=OLLAMA_MODEL,
+                    ollama_timeout=OLLAMA_TIMEOUT,
+                    max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+                )
+                if summarizer.check_ollama_available():
+                    def summarize_transcript(transcript_text: str) -> dict:
+                        """Generate AI summary and metadata."""
+                        return summarizer.get_metadata(transcript_text) or {}
+                    
+                    summarization_callback = summarize_transcript
+                else:
+                    print("⚠️ Ollama not available - skipping AI summarization")
+                    
+            except Exception as e:
+                print(f"⚠️ AI summarization not available: {str(e)}")
+        
+        # Perform batch reprocessing
+        results = file_manager.reprocess_all_failed_transcripts(
+            transcription_callback=transcribe_audio_file,
+            summarization_callback=summarization_callback
+        )
+        
+        if results:
+            successful = [r for r in results if r[1]]
+            failed = [r for r in results if not r[1]]
+            
+            print(f"\n📊 Batch reprocessing completed:")
+            print(f"✅ Successful: {len(successful)}")
+            print(f"❌ Failed: {len(failed)}")
+            
+            if successful:
+                print(f"\n✅ Successfully reprocessed:")
+                for transcript_id, _, message in successful:
+                    print(f"   - ID {transcript_id}: {message}")
+            
+            if failed:
+                print(f"\n❌ Failed to reprocess:")
+                for transcript_id, _, message in failed:
+                    print(f"   - ID {transcript_id}: {message}")
+        else:
+            print("✅ No orphaned audio files found to reprocess")
+    
+    except Exception as e:
+        print(f"❌ Error during batch reprocessing: {e}")
+
+def show_audio_files(id_reference):
+    """Show audio files associated with a transcript."""
+    try:
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        # Check if transcript exists
+        try:
+            existing_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            return
+            
+        if not existing_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            return
+        
+        clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+        audio_files_info = file_manager.get_audio_files_for_transcript(id_reference)
+        
+        print(f"\n🎵 Audio files for transcript {clean_id}:")
+        
+        if not audio_files_info:
+            print("No audio files found for this transcript.")
+            return
+        
+        print("-" * 80)
+        print(f"{'Filename':<40} {'Size':<10} {'Duration':<10} {'Status'}")
+        print("-" * 80)
+        
+        total_size = 0
+        total_duration = 0
+        
+        for audio_info in audio_files_info:
+            filename = os.path.basename(audio_info['path'])
+            size_str = f"{audio_info['size_mb']:.1f}MB" if audio_info['exists'] else "Missing"
+            duration_str = f"{audio_info['duration']:.1f}s" if audio_info['exists'] else "-"
+            status = "✅ OK" if audio_info['exists'] else "❌ Missing"
+            
+            print(f"{filename:<40} {size_str:<10} {duration_str:<10} {status}")
+            
+            if audio_info['exists']:
+                total_size += audio_info['size_mb']
+                total_duration += audio_info['duration']
+        
+        print("-" * 80)
+        print(f"Total: {len(audio_files_info)} files, {total_size:.1f}MB, {total_duration:.1f}s")
+        
+    except Exception as e:
+        print(f"❌ Error showing audio files: {e}")
 
 def show_transcript(id_reference):
     """Show the content of a transcript by ID."""
@@ -1168,7 +1640,7 @@ def append_to_transcript(id_reference):
         print("\n--- Recording additional content ---")
         
         # Record new audio
-        new_transcript = record_audio_chunked()
+        new_transcript, session_audio_file = record_audio_streaming()
         if not new_transcript:
             print("❌ No new content recorded.")
             return
@@ -1181,11 +1653,18 @@ def append_to_transcript(id_reference):
         print("--------------------")
         
         # Append to existing transcript
-        updated_path = file_manager.append_to_transcript(id_reference, new_transcript)
+        updated_path = file_manager.append_to_transcript(id_reference, new_transcript, session_audio_file=session_audio_file)
         
         if updated_path:
             print(f"✅ Successfully appended to transcript {clean_id}")
             print(f"📁 Updated file: {updated_path}")
+            
+            # Clean up the session file after successful append
+            if session_audio_file and session_audio_file.exists():
+                try:
+                    session_audio_file.unlink()  # Remove the temporary session file
+                except Exception as e:
+                    print(f"⚠️ Could not remove session file: {e}")
             
             # Copy combined content to clipboard if enabled
             if AUTO_COPY:
@@ -1273,17 +1752,133 @@ def summarize_file(path_or_id):
     except Exception as e:
         print(f"❌ Error during summarization: {e}")
 
+def list_recovery_sessions():
+    """List available recovery sessions"""
+    temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
+    
+    if not temp_audio_dir.exists():
+        print("No recovery sessions available")
+        return []
+    
+    session_files = list(temp_audio_dir.glob("session_*.wav"))
+    
+    if not session_files:
+        print("No recovery sessions available")
+        return []
+    
+    print(f"\n📋 Found {len(session_files)} recoverable sessions:")
+    
+    sessions = []
+    for session_file in sorted(session_files):
+        try:
+            session_id = session_file.stem.split('_')[1]
+            file_size = session_file.stat().st_size
+            duration = file_size / (SAMPLE_RATE * 2)  # 16-bit mono
+            timestamp = datetime.fromtimestamp(int(session_id))
+            
+            sessions.append({
+                'id': session_id,
+                'file': session_file,
+                'duration': duration,
+                'size_mb': file_size/1024/1024,
+                'timestamp': timestamp
+            })
+            
+            print(f"  {session_id}: {duration:.1f}s ({file_size/1024/1024:.1f}MB) - {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+        except Exception as e:
+            print(f"  ⚠️ Corrupted session: {session_file.name}")
+    
+    return sessions
+
+def recover_session(session_id_or_latest=None):
+    """Recover and transcribe a specific session"""
+    sessions = list_recovery_sessions()
+    
+    if not sessions:
+        return None
+    
+    # Find session
+    if session_id_or_latest is None or session_id_or_latest == "latest":
+        session = max(sessions, key=lambda s: s['timestamp'])
+        print(f"\n🔄 Recovering latest session: {session['id']}")
+    else:
+        session = next((s for s in sessions if s['id'] == str(session_id_or_latest)), None)
+        if not session:
+            print(f"❌ Session {session_id_or_latest} not found")
+            return None
+    
+    print(f"📁 Processing: {session['duration']:.1f}s recording from {session['timestamp'].strftime('%H:%M:%S')}")
+    
+    try:
+        # Load Whisper model
+        whisper_model = whisper.load_model(WHISPER_MODEL)
+        
+        # Transcribe session
+        transcript = transcribe_session_file(session['file'], whisper_model)
+        
+        if transcript and transcript.strip():
+            # Save transcript normally
+            file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+            file_path, transcript_id = file_manager.create_new_transcript(transcript.strip(), "recovered_recording")
+            
+            print(f"✅ Recovery successful!")
+            print(f"📄 Transcript {transcript_id} saved: {file_path}")
+            
+            # Add AI-generated summary and tags (if enabled)
+            if AUTO_METADATA:
+                print("🤖 Generating summary and tags...")
+                summarizer = SummarizationService(
+                    ollama_model=OLLAMA_MODEL,
+                    ollama_timeout=OLLAMA_TIMEOUT,
+                    max_content_length=OLLAMA_MAX_CONTENT_LENGTH
+                )
+                if summarizer.check_ollama_available():
+                    success = summarizer.summarize_file(file_path, copy_to_notes=False)
+                    if success:
+                        print("✅ Summary and tags added to transcript metadata")
+                    else:
+                        print("⚠️ Could not generate AI summary - transcript saved without metadata")
+                else:
+                    print("ℹ️  Ollama not available - transcript saved without AI metadata")
+            
+            # Clean up session file after successful recovery
+            session['file'].unlink()
+            print(f"🗑️ Session file cleaned up")
+            
+            return transcript.strip()
+        else:
+            print("⚠️ No speech detected in recovered session")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Recovery failed: {e}")
+        return None
+
 def main(args=None):
     try:
         # Set defaults if no args provided
         if args is None:
             args = type('Args', (), {})()
         
-        # 1. Record Audio with real-time chunking and transcription
+        # Use streaming transcription (now the default and only mode)
+        verbose = (hasattr(args, 'verbose') and args.verbose) or STREAMING_VERBOSE
+        
+        print("🚀 Starting streaming transcription")
+        
+        # 1. Record Audio with streaming system
         device_override = args.device if hasattr(args, 'device') and args.device is not None else None
-        transcribed_text = record_audio_chunked(device_override)
+        transcription_result = record_audio_streaming(device_override, verbose)
+        
+        if len(transcription_result) == 4:
+            transcribed_text, master_audio_file, existing_file_path, existing_transcript_id = transcription_result
+        else:
+            # Fallback for compatibility
+            transcribed_text, master_audio_file = transcription_result
+            existing_file_path, existing_transcript_id = None, None
         if not transcribed_text:
             return
+        
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C at any point in the main function
         if sys.platform == "darwin":  # macOS
@@ -1301,24 +1896,39 @@ def main(args=None):
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
         pyperclip.copy(transcribed_text)
-        print()
         print("📋 Transcription copied to clipboard.")
 
     # 4. Save transcript with default filename first, then let AI rename it
-    file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-    
-    try:
-        file_path, transcript_id = file_manager.create_new_transcript(
-            transcribed_text, 
-            "transcript"  # Use default name initially
-        )
-        print(f"✅ Transcript {transcript_id} successfully saved")
-    except Exception as e:
-        print(f"❌ Error saving transcript: {e}")
-        return
+    # Check if streaming already created a transcript file
+    if existing_file_path and existing_transcript_id:
+        file_path = existing_file_path  
+        transcript_id = existing_transcript_id
+    else:
+        # This is the fallback transcription path - create new transcript
+        print("�💾 Saving fallback transcript and audio...")
+        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        
+        try:
+            file_path, transcript_id = file_manager.create_new_transcript(
+                transcribed_text, 
+                "transcript",  # Use default name initially
+                session_audio_file=master_audio_file
+            )
+            print(f"✅ Transcript {transcript_id} saved")
+            
+            # Clean up the session file after successful storage
+            if master_audio_file and master_audio_file.exists():
+                try:
+                    master_audio_file.unlink()  # Remove the temporary session file
+                except Exception as e:
+                    print(f"⚠️ Could not remove session file: {e}")
+                    
+        except Exception as e:
+            print(f"❌ Error saving transcript: {e}")
+            return
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
-    if AUTO_METADATA:
+    if AUTO_METADATA and transcribed_text and transcribed_text.strip():
         print("🤖 Generating summary and tags...")
         summarizer = SummarizationService(
             ollama_model=OLLAMA_MODEL,
@@ -1329,6 +1939,9 @@ def main(args=None):
             success = summarizer.summarize_file(file_path, copy_to_notes=False)
             if success:
                 print("✅ Summary and tags added to transcript metadata")
+                
+                # Background enhancement (full audio transcription + cleanup) starts now
+                print("🔄 Starting background: full transcription → enhanced summary → audio cleanup...")
             else:
                 print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
@@ -1357,6 +1970,8 @@ if __name__ == "__main__":
                        help='Do not generate AI summary and tags')
     parser.add_argument('--device', type=int, 
                        help='Override default mic device for this recording')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Enable verbose monitoring output for streaming transcription')
     parser.add_argument('id_reference', nargs='?', 
                        help='Reference existing transcript by ID (e.g., -123456)')
     parser.add_argument('-l', '--list', action='store_true',
@@ -1365,8 +1980,20 @@ if __name__ == "__main__":
                        help='Show content of transcript by ID')
     parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
                        help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
+    parser.add_argument('--audio', type=str, metavar='ID', dest='show_audio',
+                       help='Show audio files associated with transcript by ID')
+    parser.add_argument('--reprocess', type=str, metavar='ID', dest='reprocess',
+                       help='Reprocess all audio files for transcript ID (transcribe + summarize)')
+    parser.add_argument('--reprocess-failed', action='store_true',
+                       help='Reprocess all orphaned audio files (audio without transcript)')
+    parser.add_argument('--overwrite', action='store_true',
+                       help='Overwrite existing transcript when reprocessing (default: create new)')
     parser.add_argument('-o', '--open-folder', action='store_true',
                        help='Open the transcripts folder in Finder/Explorer')
+    parser.add_argument('-r', '--recover', nargs='?', const='latest', 
+                       help='Recover session by ID or "latest"')
+    parser.add_argument('-ls', '--list-sessions', action='store_true', 
+                       help='List recoverable sessions')
     
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1382,12 +2009,22 @@ if __name__ == "__main__":
             list_transcripts()
         elif args.show:
             show_transcript(args.show)
+        elif args.show_audio:
+            show_audio_files(args.show_audio)
+        elif args.reprocess:
+            reprocess_transcript_command(args.reprocess, args.overwrite)
+        elif args.reprocess_failed:
+            reprocess_failed_command()
         elif args.summarize:
             summarize_file(args.summarize)
         elif args.id_reference:
             append_to_transcript(args.id_reference)
         elif args.open_folder:
             open_transcripts_folder()
+        elif args.list_sessions:
+            list_recovery_sessions()
+        elif args.recover:
+            recover_session(args.recover)
         else:
             main(args)
     except KeyboardInterrupt:

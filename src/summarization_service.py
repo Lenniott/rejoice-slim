@@ -645,9 +645,9 @@ JSON:"""
         if 'id' in frontmatter_data:
             return True
             
-        # Check if filename matches transcript pattern: *_DDMMYYYY_ID.ext
+        # Check if filename matches transcript pattern: ID_DDMMYYYY_*.ext
         filename = os.path.basename(file_path)
-        transcript_pattern = re.compile(r'^.*_\d{8}_\d+\.(md|txt)$')
+        transcript_pattern = re.compile(r'^\d+_\d{8}_.*\.(md|txt)$')
         return bool(transcript_pattern.match(filename))
     
     def _rename_transcript_with_ai_filename(self, file_path: str, ai_filename: str, frontmatter_data: Dict) -> Optional[str]:
@@ -667,8 +667,8 @@ JSON:"""
             current_filename = os.path.basename(file_path)
             
             # Extract ID and date from current filename
-            # Pattern: *_DDMMYYYY_ID.ext
-            pattern = re.compile(r'^.*_(\d{8})_(\d+)\.(.+)$')
+            # Pattern: ID_DDMMYYYY_*.ext
+            pattern = re.compile(r'^(\d+)_(\d{8})_.*\.(.+)$')
             match = pattern.match(current_filename)
             
             if not match:
@@ -681,13 +681,13 @@ JSON:"""
                 else:
                     return None
             else:
-                date_str = match.group(1)
-                file_id = match.group(2)  
+                file_id = match.group(1)
+                date_str = match.group(2)
                 ext = match.group(3)
             
             # Create new filename with AI-generated name
             clean_ai_filename = self._clean_filename(ai_filename)
-            new_filename = f"{clean_ai_filename}_{date_str}_{file_id}.{ext}"
+            new_filename = f"{file_id}_{date_str}_{clean_ai_filename}.{ext}"
             new_file_path = os.path.join(directory, new_filename)
             
             # Only rename if the new name is different
