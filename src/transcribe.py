@@ -292,31 +292,19 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             auto_clipboard=AUTO_COPY
         )
         
-        # Background enhancer for full audio transcription
+        # Background enhancer for quality improvement
         summarizer = get_summarizer()
-        
-        def on_enhancement_complete(task):
+        def enhancement_completed(task):
             """Callback when background enhancement completes."""
-            if verbose:
-                print(f"\n✨ Background enhancement complete for {task.session_id}")
-                print(f"   Enhanced transcript: {len(task.enhanced_transcript or '')} chars")
-                if AUTO_CLEANUP_AUDIO:
-                    print(f"   Audio cleaned up: {task.master_audio_path}")
+            print(f"🎯 Background complete: enhanced transcript saved, audio cleaned up")
         
         enhancer = BackgroundEnhancer(
             transcript_manager=file_manager,
             audio_manager=audio_manager,
             summarization_service=summarizer,
-            whisper_model_name=WHISPER_MODEL,
-            whisper_language=WHISPER_LANGUAGE,
-            sample_rate=SAMPLE_RATE,
             auto_cleanup=AUTO_CLEANUP_AUDIO
         )
-        enhancer.task_completed_callback = on_enhancement_complete
-        enhancer.start_worker()
-        
-        if verbose:
-            print(f"🔧 Background enhancer started (model: {WHISPER_MODEL}, cleanup: {AUTO_CLEANUP_AUDIO})")
+        enhancer.task_completed_callback = enhancement_completed
         
         # Initialize components without logging details
         
@@ -557,9 +545,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
                     session_id, "enhanced", {"master_audio": str(master_audio_file)}
                 )
                 
-                if enhancer.queue_enhancement(quick_transcript, str(master_audio_file)):
-                    if verbose:
-                        print("🔄 Background: Full audio transcription queued for enhanced accuracy")
+                enhancer.queue_enhancement(quick_transcript, str(master_audio_file))
                 
                 # Complete safety net session
                 safety_net.complete_session(session_id, success=True, 
@@ -709,7 +695,7 @@ def main(args=None):
         transcript_id = existing_transcript_id
     else:
         # This is the fallback transcription path - create new transcript
-        print("💾 Saving fallback transcript and audio...")
+        print("�💾 Saving fallback transcript and audio...")
         file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
         
         try:
@@ -739,6 +725,9 @@ def main(args=None):
             success = summarizer.summarize_file(file_path, copy_to_notes=False)
             if success:
                 print("✅ Summary and tags added to transcript metadata")
+                
+                # Background enhancement (full audio transcription + cleanup) starts now
+                print("🔄 Starting background: full transcription → enhanced summary → audio cleanup...")
             else:
                 print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
