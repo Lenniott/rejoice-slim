@@ -42,13 +42,13 @@ After installation, you get these commands:
 ### `rec` - Start Recording
 ```bash
 rec                    # Basic recording with all features
+rec 000042            # Append new recording to existing transcript ID
 rec -l / --list       # List all transcripts (both new and legacy)
 rec -v 000042         # View transcript content by ID  
 rec --view 000042     # Same as above (long form)
 rec -g 000042         # AI analysis: themes, questions, actions
 rec --genai 000042    # Same as above (long form) 
 rec -s / --settings   # Configure settings interactively
-rec -000042           # Reference/append to existing transcript
 ```
 
 ### 🤖 AI Analysis Features
@@ -72,13 +72,25 @@ rec --genai /path/to/notes.txt  # Long form command
 # - Handles files up to 30k+ characters efficiently
 ```
 
-### New ID-Based System
+### 🔗 Appending to Existing Transcripts
 ```bash
-rec                   # Creates new transcript (e.g., meeting-notes_22102025_000001.md)
-rec -000042           # Record and append to existing transcript 000042
-rec --list            # Show all transcripts with their IDs
-rec --show 000042     # Display content of transcript 000042
+# Create a new transcript
+rec                   # Creates: meeting-notes_22102025_000001.md
+
+# Append to an existing transcript by ID
+rec 000042            # Record more audio and add to transcript 000042
+rec 1                 # Works with short IDs too
+
+# View and manage
+rec -l                # List all transcripts with their IDs
+rec -v 000042         # View transcript content
 ```
+
+**How appending works:**
+1. Shows preview of existing transcript content
+2. Records new audio
+3. Appends new transcription to the same file
+4. Preserves all audio files linked to that transcript ID
 
 ### Additional Commands
 ```bash

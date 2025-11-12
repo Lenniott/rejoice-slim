@@ -78,24 +78,17 @@ def main():
     else:
         auto_metadata = "n"  # Default to no when Ollama not installed
 
-    # Get real-time chunking settings
+    # Get performance settings
     if is_basic_mode:
         print("\n--- Performance Settings ---")
         print("Using sensible defaults for performance settings:")
-        print("  • Chunk duration: 10 seconds (how often you see updates)")
         print("  • No speech detection: 2 minutes (auto-stop duration)")
-        print("  • Advanced settings: Optimized automatically")
-        chunk_duration = "10"
+        print("  • Streaming buffer: 5 minutes (rolling buffer size)")
+        print("  • Segment sizes: 30-60-90 seconds (min-target-max)")
         silence_duration = "120"
     else:
         print("\n--- Performance Settings ---")
-        print("Chunk Duration: How often you see transcription updates")
-        print("  • Shorter (5-8s): More frequent updates")
-        print("  • Default (10s): Smooth, balanced experience")  
-        print("  • Longer (15-30s): Less frequent updates")
-        chunk_duration = input("Chunk duration in seconds (5-30) [default: 10]: ") or "10"
-        
-        print("\nNo Speech Detection: Automatically stop recording when no speech detected")
+        print("No Speech Detection: Automatically stop recording when no speech detected")
         print("  • Default (120s): 2 minutes of no speech")
         print("  • Shorter (60s): 1 minute - stops sooner")
         print("  • Longer (180s): 3 minutes - waits longer")
@@ -139,7 +132,6 @@ def main():
     language_choice = language_choice.strip()
     ollama_model = ollama_model.strip()
     rec_command = rec_command.strip()
-    chunk_duration = str(chunk_duration).strip()
     silence_duration = str(silence_duration).strip()
     mic_device = str(mic_device).strip()
     
@@ -163,15 +155,22 @@ def main():
         f.write(f"COMMAND_NAME='{rec_command}'\n")
         f.write(f"AUTO_COPY={'true' if auto_copy == 'y' else 'false'}\n")
         f.write(f"AUTO_OPEN={'true' if auto_open == 'y' else 'false'}\n")
-        f.write(f"CHUNK_DURATION_SECONDS={chunk_duration}\n")
         f.write(f"SILENCE_DURATION_SECONDS={silence_duration}\n")
         f.write(f"DEFAULT_MIC_DEVICE={mic_device}\n")
         
-        # Hardcoded advanced settings (optimized defaults)
-        f.write(f"# Advanced settings - optimized for best performance\n")
-        f.write(f"CHUNK_OVERLAP_SECONDS=2.5\n")
-        f.write(f"TRANSCRIPTION_WORKER_THREADS=2\n")
-        f.write(f"MAX_RETRY_ATTEMPTS=4\n")
+        # Streaming transcription settings (now the default mode)
+        f.write(f"# Streaming transcription settings\n")
+        f.write(f"STREAMING_BUFFER_SIZE_SECONDS=300\n")  # 5-minute rolling buffer
+        f.write(f"STREAMING_MIN_SEGMENT_DURATION=30\n")  # Minimum 30s segments
+        f.write(f"STREAMING_TARGET_SEGMENT_DURATION=60\n")  # Target 60s segments
+        f.write(f"STREAMING_MAX_SEGMENT_DURATION=90\n")  # Maximum 90s segments
+        f.write(f"STREAMING_VERBOSE=false\n")
+        
+        # Ollama AI settings
+        f.write(f"# Ollama AI settings\n")
+        f.write(f"OLLAMA_API_URL='http://localhost:11434/api/generate'\n")
+        f.write(f"OLLAMA_TIMEOUT=180\n")  # 3 minutes for local LLMs
+        f.write(f"OLLAMA_MAX_CONTENT_LENGTH=32000\n")  # 32K characters
 
     print("\n🎉 Setup complete! Configuration saved to .env")
     print("The necessary aliases have been prepared.")
