@@ -209,7 +209,7 @@ def append_to_transcript(id_reference, save_path, output_format, auto_copy, reco
         print("\n--- Recording additional content ---")
         
         # Record new audio
-        new_transcript, session_audio_file, _, _ = record_audio_streaming_func()
+        new_transcript, session_audio_file, quick_transcript_path, quick_transcript_id = record_audio_streaming_func()
         if not new_transcript:
             print("❌ No new content recorded.")
             return
@@ -234,6 +234,14 @@ def append_to_transcript(id_reference, save_path, output_format, auto_copy, reco
                     session_audio_file.unlink()  # Remove the temporary session file
                 except Exception as e:
                     print(f"⚠️ Could not remove session file: {e}")
+            
+            # Remove the duplicate quick transcript file created during recording
+            if quick_transcript_path and os.path.exists(quick_transcript_path):
+                try:
+                    os.remove(quick_transcript_path)
+                    print(f"🗑️  Removed duplicate quick transcript file")
+                except Exception as e:
+                    print(f"⚠️ Could not remove duplicate transcript: {e}")
             
             # Copy combined content to clipboard if enabled
             if auto_copy:
