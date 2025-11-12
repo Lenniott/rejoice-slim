@@ -239,7 +239,6 @@ def append_to_transcript(id_reference, save_path, output_format, auto_copy, reco
             if quick_transcript_path and os.path.exists(quick_transcript_path):
                 try:
                     os.remove(quick_transcript_path)
-                    print(f"🗑️  Removed duplicate quick transcript file")
                 except Exception as e:
                     print(f"⚠️ Could not remove duplicate transcript: {e}")
             
