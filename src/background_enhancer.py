@@ -4,10 +4,14 @@ import threading
 import time
 import os
 import tempfile
+import wave
+import numpy as np
+import whisper
 from typing import Optional, Dict, Callable
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from transcript_manager import TranscriptFileManager
 from audio_manager import AudioFileManager
@@ -43,6 +47,9 @@ class BackgroundEnhancer:
                  transcript_manager: TranscriptFileManager,
                  audio_manager: AudioFileManager,
                  summarization_service: SummarizationService,
+                 whisper_model_name: str = "base",
+                 whisper_language: str = "auto",
+                 sample_rate: int = 16000,
                  auto_cleanup: bool = True):
         """
         Initialize the background enhancer.
@@ -51,12 +58,21 @@ class BackgroundEnhancer:
             transcript_manager: TranscriptFileManager for file operations
             audio_manager: AudioFileManager for audio storage
             summarization_service: SummarizationService for summary generation
+            whisper_model_name: Whisper model to use for transcription
+            whisper_language: Language for transcription ('auto' for detection)
+            sample_rate: Audio sample rate (default 16000 for Whisper)
             auto_cleanup: Automatically cleanup audio files after successful enhancement
         """
         self.transcript_manager = transcript_manager
         self.audio_manager = audio_manager
         self.summarization_service = summarization_service
+        self.whisper_model_name = whisper_model_name
+        self.whisper_language = whisper_language
+        self.sample_rate = sample_rate
         self.auto_cleanup = auto_cleanup
+        
+        # Lazy-load Whisper model (loaded in worker thread)
+        self._whisper_model = None
         
         # Task management
         self.lock = threading.RLock()
@@ -77,6 +93,14 @@ class BackgroundEnhancer:
         self.progress_callback: Optional[Callable[[str, int], None]] = None
         
         logger.info(f"BackgroundEnhancer initialized (auto-cleanup: {auto_cleanup})")
+    
+    def _load_whisper_model(self):
+        """Lazy-load Whisper model in worker thread."""
+        if self._whisper_model is None:
+            logger.info(f"Loading Whisper model '{self.whisper_model_name}' in background...")
+            self._whisper_model = whisper.load_model(self.whisper_model_name)
+            logger.info("Whisper model loaded in background")
+        return self._whisper_model
     
     def start_worker(self) -> None:
         """Start the background worker thread."""
@@ -243,21 +267,54 @@ class BackgroundEnhancer:
             Enhanced transcript text or None if failed
         """
         try:
-            # TODO: Integrate with existing Whisper transcription system
-            # This should use the same transcription functions as the main system
-            # but process the entire audio file at once for maximum accuracy
+            # Load Whisper model (lazy loading in background thread)
+            whisper_model = self._load_whisper_model()
             
-            # For now, simulate enhanced transcription
-            time.sleep(2.0)  # Simulate processing time
+            # Read WAV file
+            with wave.open(task.master_audio_path, 'rb') as wav_file:
+                frames = wav_file.readframes(-1)
+                sample_rate = wav_file.getframerate()
+                n_channels = wav_file.getnchannels()
             
-            enhanced_text = f"[ENHANCED TRANSCRIPTION]\n{task.quick_transcript_text}"
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(frames, dtype=np.int16)
             
-            logger.debug(f"Enhanced transcription completed for {task.session_id}")
+            # Convert to float32 normalized to [-1, 1]
+            audio_data = audio_data.astype(np.float32) / 32767.0
+            
+            # Handle stereo to mono conversion if needed
+            if n_channels > 1:
+                audio_data = audio_data.reshape(-1, n_channels).mean(axis=1)
+            
+            if len(audio_data) < 1600:  # Less than 0.1 seconds
+                logger.warning(f"Audio too short for transcription: {len(audio_data)} samples")
+                return task.quick_transcript_text  # Return quick transcript as fallback
+            
+            # Resample if needed (Whisper expects 16kHz)
+            if sample_rate != self.sample_rate:
+                ratio = self.sample_rate / sample_rate
+                new_length = int(len(audio_data) * ratio)
+                audio_data = np.interp(
+                    np.linspace(0, len(audio_data), new_length),
+                    np.arange(len(audio_data)),
+                    audio_data
+                )
+            
+            # Transcribe with Whisper
+            if self.whisper_language and self.whisper_language.lower() != "auto":
+                result = whisper_model.transcribe(audio_data, fp16=False, language=self.whisper_language)
+            else:
+                result = whisper_model.transcribe(audio_data, fp16=False)
+            
+            enhanced_text = result["text"].strip()
+            
+            logger.info(f"Enhanced transcription completed for {task.session_id}: {len(enhanced_text)} chars")
             return enhanced_text
             
         except Exception as e:
             logger.error(f"Failed to enhance transcription for {task.session_id}: {e}")
-            return None
+            # Return quick transcript as fallback
+            return task.quick_transcript_text
     
     def _generate_enhanced_summary(self, transcript_text: str) -> Optional[str]:
         """
