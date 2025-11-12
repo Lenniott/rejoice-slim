@@ -210,7 +210,6 @@ class TranscriptFileManager:
                                 
                                 # Rename file if the name changed
                                 if new_filename_full != current_filename:
-                                    import os
                                     os.rename(file_path, new_file_path)
                                     file_path = new_file_path
                     except Exception as e:
