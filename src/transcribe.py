@@ -49,9 +49,6 @@ from background_enhancer import BackgroundEnhancer
 from loading_indicator import LoadingIndicator
 from safety_net import SafetyNetManager, SafetyNetIntegrator
 
-# Import VAD service for auto-stop
-from vad_service import VADService
-
 # --- CONFIGURATION ---
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 SAVE_PATH = os.getenv("SAVE_PATH")
@@ -84,21 +81,7 @@ DEFAULT_MIC_DEVICE = int(os.getenv("DEFAULT_MIC_DEVICE", "-1"))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Suppress verbose logging from our libraries
-logging.getLogger('audio_chunker').setLevel(logging.WARNING)
-logging.getLogger('transcription_worker').setLevel(logging.WARNING)
-logging.getLogger('vad_service').setLevel(logging.WARNING)
-
-# Old load_prompts function removed - now using SummarizationService._load_prompts
-
-def load_templates():
-    """Load templates from templates.json file"""
-    templates_path = os.path.join(os.path.dirname(__file__), '..', 'templates.json')
-    try:
-        with open(templates_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not load templates file: {e}")
-        return {}
+# (Old audio_chunker, transcription_worker, vad_service logging removed - modules deleted)
 
 # All AI functions moved to SummarizationService - transcribe.py just handles recording
 
@@ -727,53 +710,6 @@ def uninstall_settings():
         else:
             print("❌ Invalid choice. Please select 1-2.")
 
-def setup_keyboard_handler():
-    """Set up terminal for non-blocking keyboard input."""
-    if sys.platform != "win32":  # Unix-like systems
-        try:
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            tty.setraw(sys.stdin.fileno())
-            return fd, old_settings
-        except (OSError, termios.error):
-            # Terminal doesn't support raw mode (e.g., in some IDEs)
-            return None, None
-    return None, None
-
-def restore_keyboard_handler(fd, old_settings):
-    """Restore terminal settings."""
-    if fd is not None and old_settings is not None:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-def check_keyboard_input(fd):
-    """Check for keyboard input without blocking."""
-    if sys.platform == "win32":
-        # Windows implementation (simplified)
-        try:
-            import msvcrt
-            return msvcrt.kbhit()
-        except ImportError:
-            # Fallback if msvcrt not available
-            return False
-    else:
-        # Unix-like systems
-        try:
-            return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
-        except (OSError, ValueError):
-            # Fallback if select doesn't work (e.g., in some IDEs)
-            return False
-
-def get_keyboard_char():
-    """Get a keyboard character."""
-    if sys.platform == "win32":
-        try:
-            import msvcrt
-            return msvcrt.getch().decode('utf-8')
-        except ImportError:
-            return sys.stdin.readline().strip()
-    else:
-        return sys.stdin.read(1)
-
 # Global cancellation state - accessible from signal handler
 _global_recording_state = {
     'recording_event': None,
@@ -782,33 +718,6 @@ _global_recording_state = {
 }
 
 # Session management helper functions
-def cleanup_session_file(audio_writer, session_file):
-    """Clean up session file and writer"""
-    if audio_writer:
-        try:
-            audio_writer.close()
-        except:
-            pass
-    
-    try:
-        if session_file.exists():
-            session_file.unlink()
-    except:
-        pass
-
-def preserve_session_for_recovery(session_file, session_id, reason):
-    """Preserve session file for recovery"""
-    if not session_file.exists():
-        return
-    
-    file_size = session_file.stat().st_size
-    duration = file_size / (SAMPLE_RATE * 2) if file_size > 0 else 0
-    
-    print(f"💾 Audio session preserved: {session_file.name}")
-    print(f"📊 Duration: {duration:.1f}s, Size: {file_size/1024/1024:.1f}MB")
-    print(f"🔧 Reason: {reason}")
-    print(f"🔄 Recover with: python transcribe.py --recover {session_id}")
-
 def transcribe_session_file(session_file, whisper_model):
     """Transcribe a complete session file"""
     try:
@@ -852,30 +761,6 @@ def transcribe_session_file(session_file, whisper_model):
     except Exception as e:
         print(f"❌ Session transcription failed: {e}")
         return None
-
-def cleanup_services_with_timeout(worker_pool, vad_service, timeout=1.0):
-    """Cleanup services with aggressive timeout protection"""
-    try:
-        def cleanup():
-            try:
-                if worker_pool:
-                    worker_pool.stop()
-            except:
-                pass
-            try:
-                if vad_service:
-                    vad_service.stop_recording()
-            except:
-                pass
-        
-        stop_thread = threading.Thread(target=cleanup)
-        stop_thread.start()
-        stop_thread.join(timeout=timeout)
-        
-        if stop_thread.is_alive():
-            print("⚠️ Service cleanup timed out (continuing anyway)")
-    except:
-        pass
 
 def _global_signal_handler(signum, frame):
     """Global signal handler for Ctrl+C."""
