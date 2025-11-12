@@ -300,6 +300,11 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             if verbose:
                 print(f"\n✨ Background enhancement complete for {task.session_id}")
                 print(f"   Enhanced transcript: {len(task.enhanced_transcript or '')} chars")
+                if AUTO_METADATA:
+                    if getattr(task, 'enhanced_summary', None):
+                        print("   AI metadata refreshed from full audio")
+                    else:
+                        print("   AI metadata skipped during enhancement")
                 if AUTO_CLEANUP_AUDIO:
                     print(f"   Audio cleaned up: {task.master_audio_path}")
         
@@ -310,13 +315,14 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             whisper_model_name=WHISPER_MODEL,
             whisper_language=WHISPER_LANGUAGE,
             sample_rate=SAMPLE_RATE,
-            auto_cleanup=AUTO_CLEANUP_AUDIO
+            auto_cleanup=AUTO_CLEANUP_AUDIO,
+            apply_metadata=AUTO_METADATA
         )
         enhancer.task_completed_callback = on_enhancement_complete
         enhancer.start_worker()
         
         if verbose:
-            print(f"🔧 Background enhancer started (model: {WHISPER_MODEL}, cleanup: {AUTO_CLEANUP_AUDIO})")
+            print(f"🔧 Background enhancer started (model: {WHISPER_MODEL}, cleanup: {AUTO_CLEANUP_AUDIO}, metadata: {AUTO_METADATA})")
         
         # Initialize components without logging details
         
@@ -658,7 +664,7 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
             if input("📂 Open the file? (y/n): ").lower() == 'y':
                 opener = "open" if sys.platform == "darwin" else "xdg-open"
                 subprocess.run([opener, full_path])
-                
+
 def main(args=None):
     try:
         # Set defaults if no args provided
@@ -696,6 +702,7 @@ def main(args=None):
 
     # 2. Deduplicate transcript to remove any repetition from chunk overlap
     transcribed_text = deduplicate_transcript(transcribed_text)
+    streaming_success = bool(existing_file_path and existing_transcript_id)
 
     # 3. Copy to clipboard immediately (before LLM processing)
     if AUTO_COPY:
@@ -704,7 +711,7 @@ def main(args=None):
 
     # 4. Save transcript with default filename first, then let AI rename it
     # Check if streaming already created a transcript file
-    if existing_file_path and existing_transcript_id:
+    if streaming_success:
         file_path = existing_file_path  
         transcript_id = existing_transcript_id
     else:
@@ -733,16 +740,19 @@ def main(args=None):
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():
-        print("🤖 Generating summary and tags...")
-        summarizer = get_summarizer()
-        if summarizer.check_ollama_available():
-            success = summarizer.summarize_file(file_path, copy_to_notes=False)
-            if success:
-                print("✅ Summary and tags added to transcript metadata")
-            else:
-                print("⚠️ Could not generate AI summary - transcript saved without metadata")
+        if streaming_success:
+            print("🤖 AI metadata will be generated after full-audio enhancement completes...")
         else:
-            print("ℹ️  Ollama not available - transcript saved without AI metadata")
+            print("🤖 Generating summary and tags...")
+            summarizer = get_summarizer()
+            if summarizer.check_ollama_available():
+                success = summarizer.summarize_file(file_path, copy_to_notes=False)
+                if success:
+                    print("✅ Summary and tags added to transcript metadata")
+                else:
+                    print("⚠️ Could not generate AI summary - transcript saved without metadata")
+            else:
+                print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
     # 6. Handle post-transcription actions
     summarizer_for_check = get_summarizer()

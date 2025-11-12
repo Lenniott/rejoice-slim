@@ -91,6 +91,57 @@ class TranscriptFileManager:
         
         return file_path, transcript_id
     
+    def update_transcript_content(self, file_path: str, transcript_text: str) -> bool:
+        """
+        Update an existing transcript file with new content while preserving header metadata.
+        
+        Args:
+            file_path: Path to the transcript file
+            transcript_text: New transcription text to write
+        
+        Returns:
+            bool: True if update succeeded, False otherwise
+        """
+        if not file_path or not os.path.exists(file_path):
+            return False
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                existing_content = f.read()
+        except (IOError, OSError):
+            return False
+        
+        header_data = TranscriptHeader.parse_header(existing_content)
+        transcript_id = None
+        creation_date = None
+        
+        if header_data:
+            if 'id' in header_data:
+                transcript_id = str(header_data['id'])
+            if 'created' in header_data:
+                from datetime import datetime
+                try:
+                    creation_date = datetime.fromisoformat(header_data['created'])
+                except (ValueError, TypeError):
+                    creation_date = None
+        
+        # Fallback to extracting ID from filename if header missing
+        if not transcript_id:
+            transcript_id = TranscriptHeader.get_id_from_file(file_path)
+        
+        if not transcript_id:
+            return False
+        
+        header = TranscriptHeader(transcript_id, creation_date)
+        new_content = header.create_file_content(transcript_text.strip(), self.output_format)
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            return True
+        except (IOError, OSError):
+            return False
+    
     def find_transcript(self, id_reference: str) -> Optional[str]:
         """
         Find transcript file by ID reference using flexible matching.

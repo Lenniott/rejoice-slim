@@ -31,7 +31,7 @@ class EnhancementTask:
     status: str  # 'pending', 'transcribing', 'summarizing', 'completed', 'failed'
     progress_percentage: int = 0
     enhanced_transcript: Optional[str] = None
-    enhanced_summary: Optional[str] = None
+    enhanced_summary: Optional[bool] = None
     error_message: Optional[str] = None
     completion_time: Optional[float] = None
 
@@ -50,7 +50,8 @@ class BackgroundEnhancer:
                  whisper_model_name: str = "base",
                  whisper_language: str = "auto",
                  sample_rate: int = 16000,
-                 auto_cleanup: bool = True):
+                 auto_cleanup: bool = True,
+                 apply_metadata: bool = True):
         """
         Initialize the background enhancer.
         
@@ -62,6 +63,7 @@ class BackgroundEnhancer:
             whisper_language: Language for transcription ('auto' for detection)
             sample_rate: Audio sample rate (default 16000 for Whisper)
             auto_cleanup: Automatically cleanup audio files after successful enhancement
+            apply_metadata: Generate AI metadata (summary, tags) after enhancement
         """
         self.transcript_manager = transcript_manager
         self.audio_manager = audio_manager
@@ -70,6 +72,7 @@ class BackgroundEnhancer:
         self.whisper_language = whisper_language
         self.sample_rate = sample_rate
         self.auto_cleanup = auto_cleanup
+        self.apply_metadata = apply_metadata
         
         # Lazy-load Whisper model (loaded in worker thread)
         self._whisper_model = None
@@ -92,7 +95,9 @@ class BackgroundEnhancer:
         self.task_completed_callback: Optional[Callable[[EnhancementTask], None]] = None
         self.progress_callback: Optional[Callable[[str, int], None]] = None
         
-        logger.info(f"BackgroundEnhancer initialized (auto-cleanup: {auto_cleanup})")
+        logger.info(
+            f"BackgroundEnhancer initialized (auto-cleanup: {auto_cleanup}, metadata: {apply_metadata})"
+        )
     
     def _load_whisper_model(self):
         """Lazy-load Whisper model in worker thread."""
@@ -210,21 +215,44 @@ class BackgroundEnhancer:
                 raise Exception("Failed to generate enhanced transcription")
             
             task.enhanced_transcript = enhanced_transcript
-            self._update_progress(task, 60, "Enhanced transcription complete")
+            self._update_progress(task, 60, "Full-audio transcription complete")
             
-            # Step 2: Enhanced summary generation
-            self._update_progress(task, 70, "Generating enhanced summary...")
-            enhanced_summary = self._generate_enhanced_summary(enhanced_transcript)
+            # Step 2: Update transcript file with enhanced content
+            self._update_progress(task, 70, "Updating transcript with full audio...")
+            if not self._update_transcript_file(task):
+                raise Exception("Failed to update transcript with enhanced content")
+            self._update_progress(task, 80, "Transcript updated with enhanced audio")
             
-            task.enhanced_summary = enhanced_summary
-            self._update_progress(task, 90, "Enhanced summary complete")
-            
-            # Step 3: Update transcript file
-            self._update_progress(task, 95, "Updating transcript file...")
-            self._update_transcript_file(task)
+            # Step 3: Generate AI metadata if enabled
+            if self.apply_metadata and self.summarization_service:
+                self._update_progress(task, 90, "Generating AI metadata from enhanced transcript...")
+                try:
+                    metadata_success = self.summarization_service.summarize_file(
+                        task.quick_transcript_path,
+                        copy_to_notes=False
+                    )
+                    if metadata_success:
+                        task.enhanced_summary = True
+                        # File may have been renamed by metadata step; refresh path
+                        try:
+                            new_path = self.transcript_manager.find_transcript(task.session_id)
+                            if new_path:
+                                task.quick_transcript_path = new_path
+                        except Exception:
+                            pass
+                        self._update_progress(task, 95, "AI metadata updated")
+                    else:
+                        self._update_progress(task, 95, "AI metadata skipped (failed)")
+                        logger.warning(f"AI metadata generation failed for {task.session_id}")
+                except Exception as metadata_error:
+                    self._update_progress(task, 95, "AI metadata skipped (error)")
+                    logger.error(f"Error generating AI metadata for {task.session_id}: {metadata_error}")
+            else:
+                self._update_progress(task, 90, "AI metadata disabled - skipping")
             
             # Step 4: Cleanup if enabled
             if self.auto_cleanup:
+                self._update_progress(task, 98, "Cleaning up audio files...")
                 self._cleanup_audio_file(task)
             
             # Mark as completed
@@ -308,6 +336,10 @@ class BackgroundEnhancer:
             
             enhanced_text = result["text"].strip()
             
+            if not enhanced_text:
+                logger.warning(f"Enhanced transcription empty for {task.session_id}")
+                return task.quick_transcript_text
+            
             logger.info(f"Enhanced transcription completed for {task.session_id}: {len(enhanced_text)} chars")
             return enhanced_text
             
@@ -316,39 +348,7 @@ class BackgroundEnhancer:
             # Return quick transcript as fallback
             return task.quick_transcript_text
     
-    def _generate_enhanced_summary(self, transcript_text: str) -> Optional[str]:
-        """
-        Generate enhanced summary with complete context.
-        
-        Args:
-            transcript_text: Complete enhanced transcript
-            
-        Returns:
-            Enhanced summary or None if failed
-        """
-        try:
-            if not self.summarization_service:
-                logger.warning("No summarization service available")
-                return None
-            
-            # Generate comprehensive summary with full context
-            summary_result = self.summarization_service.create_comprehensive_summary(
-                transcript_text,
-                include_detailed_analysis=True
-            )
-            
-            if summary_result and 'summary' in summary_result:
-                logger.debug("Enhanced summary generated successfully")
-                return summary_result['summary']
-            else:
-                logger.warning("Failed to generate enhanced summary")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error generating enhanced summary: {e}")
-            return None
-    
-    def _update_transcript_file(self, task: EnhancementTask) -> None:
+    def _update_transcript_file(self, task: EnhancementTask) -> bool:
         """
         Update the transcript file with enhanced content.
         
@@ -356,29 +356,17 @@ class BackgroundEnhancer:
             task: EnhancementTask with enhanced content
         """
         try:
-            # Create enhanced metadata
-            enhanced_metadata = {
-                'enhancement_timestamp': datetime.now().isoformat(),
-                'enhancement_type': 'full_audio_whisper',
-                'processing_time': time.time() - task.start_time,
-                'quick_transcript_length': len(task.quick_transcript_text),
-                'enhanced_transcript_length': len(task.enhanced_transcript or ""),
-                'has_enhanced_summary': task.enhanced_summary is not None
-            }
-            
-            # Update transcript file with enhanced content
-            self.transcript_manager.update_transcript_content(
+            success = self.transcript_manager.update_transcript_content(
                 task.quick_transcript_path,
-                enhanced_transcript=task.enhanced_transcript,
-                enhanced_summary=task.enhanced_summary,
-                enhancement_metadata=enhanced_metadata
+                task.enhanced_transcript or ""
             )
-            
+            if not success:
+                raise RuntimeError("Transcript manager reported failure")
             logger.debug(f"Updated transcript file for {task.session_id}")
-            
+            return True
         except Exception as e:
             logger.error(f"Failed to update transcript file for {task.session_id}: {e}")
-            raise
+            return False
     
     def _cleanup_audio_file(self, task: EnhancementTask) -> None:
         """
