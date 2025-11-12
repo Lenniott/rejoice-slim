@@ -65,6 +65,7 @@ rec -g 000042                   # Analyze transcript by ID
 - **[📖 How to Use](USAGE.md)** - Complete user guide with examples  
 - **[⚙️ Settings](SETTINGS.md)** - Configuration options and customization
 - **[📦 Dependencies](DEPENDENCIES.md)** - Package details and security information
+- **[🏗️ Architecture](ARCHITECTURE.md)** - System design and developer guide
 
 ---
 
