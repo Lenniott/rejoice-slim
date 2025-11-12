@@ -39,7 +39,7 @@ from id_generator import TranscriptIDGenerator
 from file_header import TranscriptHeader
 
 # Import summarization service
-from summarization_service import SummarizationService
+from summarization_service import get_summarizer
 
 # Import streaming transcription components
 from audio_buffer import CircularAudioBuffer
@@ -286,12 +286,7 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         )
         
         # Background enhancer for quality improvement
-        summarizer = SummarizationService(
-            ollama_model=OLLAMA_MODEL,
-            ollama_api_url=OLLAMA_API_URL,
-            ollama_timeout=OLLAMA_TIMEOUT,
-            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
-        )
+        summarizer = get_summarizer()
         def enhancement_completed(task):
             """Callback when background enhancement completes."""
             print(f"🎯 Background complete: enhanced transcript saved, audio cleaned up")
@@ -710,12 +705,7 @@ def main(args=None):
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():
         print("🤖 Generating summary and tags...")
-        summarizer = SummarizationService(
-            ollama_model=OLLAMA_MODEL,
-            ollama_api_url=OLLAMA_API_URL,
-            ollama_timeout=OLLAMA_TIMEOUT,
-            max_content_length=OLLAMA_MAX_CONTENT_LENGTH
-        )
+        summarizer = get_summarizer()
         if summarizer.check_ollama_available():
             success = summarizer.summarize_file(file_path, copy_to_notes=False)
             if success:
@@ -729,12 +719,7 @@ def main(args=None):
             print("ℹ️  Ollama not available - transcript saved without AI metadata")
 
     # 6. Handle post-transcription actions
-    summarizer_for_check = SummarizationService(
-        ollama_model=OLLAMA_MODEL,
-        ollama_api_url=OLLAMA_API_URL,
-        ollama_timeout=OLLAMA_TIMEOUT,
-        max_content_length=OLLAMA_MAX_CONTENT_LENGTH
-    )
+    summarizer_for_check = get_summarizer()
     handle_post_transcription_actions(transcribed_text, file_path, summarizer_for_check.check_ollama_available(), args)
 
 if __name__ == "__main__":
