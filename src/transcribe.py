@@ -227,6 +227,12 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         import warnings
         warnings.filterwarnings("ignore")
     
+    # Show initialization indicator
+    if not verbose:
+        from loading_indicator import LoadingIndicator
+        indicator = LoadingIndicator("Initializing recording system...")
+        indicator.start()
+    
     # Generate session ID
     session_id = f"stream_{int(time.time())}"
     
@@ -302,6 +308,9 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         # Initialize components without logging details
         
     except Exception as e:
+        if not verbose:
+            indicator.stop()
+            indicator.join()
         print(f"❌ Failed to initialize streaming components: {e}")
         return None, None
     
@@ -324,6 +333,9 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             return False
     
     if not initialize_audio_writer():
+        if not verbose:
+            indicator.stop()
+            indicator.join()
         return None, None
     
     def keyboard_listener():
@@ -399,6 +411,11 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         # Start keyboard listener
         keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
         keyboard_thread.start()
+        
+        # Stop initialization indicator
+        if not verbose:
+            indicator.stop()
+            indicator.join()
         
         # Platform-specific instructions
         if sys.platform == "darwin":  # macOS
