@@ -33,7 +33,7 @@ from summarization_service import get_summarizer
 
 # Import streaming transcription components
 from audio_buffer import CircularAudioBuffer
-from volume_segmenter import VolumeSegmenter, SegmentProcessor
+from volume_segmenter import VolumeSegmenter, SegmentProcessor, VolumeConfig
 from quick_transcript import QuickTranscriptAssembler
 from loading_indicator import LoadingIndicator
 from safety_net import SafetyNetManager
@@ -244,7 +244,6 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         )
         
         # Volume segmenter with configurable durations
-        from volume_segmenter import VolumeConfig
         volume_config = VolumeConfig(
             min_segment_duration=STREAMING_MIN_SEGMENT_DURATION,
             target_segment_duration=STREAMING_TARGET_SEGMENT_DURATION,
