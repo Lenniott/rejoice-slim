@@ -483,105 +483,140 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
 
         audio_buffer.stop_recording()
         
+        # Get actual recording duration
+        recording_duration = audio_buffer.get_recording_duration()
+        debug_log.milestone(f"Recording stopped: {recording_duration:.1f}s captured")
+        debug_log.detail(f"Total audio duration: {recording_duration:.1f}s")
+        
         # Start loading indicator for processing
         loader = LoadingIndicator("🎤 Processing audio...")
         loader.start()
         
+        # Decide on processing strategy based on duration
+        use_streaming = recording_duration >= 90.0
+        debug_log.detail(f"Processing strategy: {'streaming + full' if use_streaming else 'full only'} (duration: {recording_duration:.1f}s)")
+        
         try:
-            # Process any final segments
-            loader.update("🔍 Analyzing segments...")
+            quick_transcript_text = None
+            quick_transcript_path = None
+            quick_transcript_id = None
             
-            try:
-                # Force flush any remaining segment
-                final_segment = volume_segmenter.flush_remaining_segment()
+            if use_streaming:
+                # For recordings >= 90s: Process streaming segments first for quick transcript
+                loader.update("🔍 Analyzing segments...")
+                debug_log.milestone("Processing quick transcript from streaming segments")
+                
+                try:
+                    # Force flush any remaining segment
+                    final_segment = volume_segmenter.flush_remaining_segment()
 
-                # Get any remaining segments
-                final_segments = volume_segmenter.get_detected_segments()
-                        
-                for segment_info in final_segments[segments_processed:]:
-                    try:
-                        # Extract audio data for this segment
-                        audio_data = segment_extractor.extract_segment_audio(segment_info)
-                        if audio_data is not None:
-                            assembler.add_segment_for_transcription(segment_info, audio_data)
-                            segments_processed += 1
-                            debug_log.detail(f"Final segment: {segment_info.duration:.1f}s")
+                    # Get any remaining segments
+                    final_segments = volume_segmenter.get_detected_segments()
+                            
+                    for segment_info in final_segments[segments_processed:]:
+                        try:
+                            # Extract audio data for this segment
+                            audio_data = segment_extractor.extract_segment_audio(segment_info)
+                            if audio_data is not None:
+                                assembler.add_segment_for_transcription(segment_info, audio_data)
+                                segments_processed += 1
+                                debug_log.detail(f"Final segment: {segment_info.duration:.1f}s")
+                                if debug:
+                                    print(f"📦 Final segment: {segment_info.duration:.1f}s")
+                            else:
+                                debug_log.warning("Could not extract final segment audio")
+                                if debug:
+                                    print(f"⚠️ Could not extract final segment audio")
+                        except Exception as e:
+                            debug_log.error(f"Final segment error: {e}")
                             if debug:
-                                print(f"📦 Final segment: {segment_info.duration:.1f}s")
-                        else:
-                            debug_log.warning("Could not extract final segment audio")
-                            if debug:
-                                print(f"⚠️ Could not extract final segment audio")
-                    except Exception as e:
-                        debug_log.error(f"Final segment error: {e}")
-                        if debug:
-                            print(f"⚠️ Final segment error: {e}")
-            except Exception as e:
-                debug_log.error(f"Final processing error: {e}")
-                if debug:
-                    print(f"⚠️ Final processing error: {e}")
-            
-            # Finalize quick transcript
-            loader.update("📝 Finalizing transcript...")
-            quick_transcript = assembler.finalize_transcript()
-            
-            # Check if we have real transcription content (not just placeholder)
-            has_real_content = bool(quick_transcript and quick_transcript.has_content)
-            
-            if has_real_content:
-                # Mark streaming attempt as successful
-                safety_net.complete_processing_attempt(
-                    session_id, streaming_attempt, 
-                    output_files=[quick_transcript.file_path] if quick_transcript.file_path else [],
-                    success=True
-                )
+                                print(f"⚠️ Final segment error: {e}")
+                except Exception as e:
+                    debug_log.error(f"Final processing error: {e}")
+                    if debug:
+                        print(f"⚠️ Final processing error: {e}")
                 
-                # Complete safety net session
-                safety_net.complete_session(session_id, success=True, 
-                                           final_output_files=[str(master_audio_file)])
+                # Finalize quick transcript
+                loader.update("📝 Finalizing quick transcript...")
+                quick_transcript = assembler.finalize_transcript()
                 
-                loader.stop()  # Clear loading indicator
-                return quick_transcript.transcript_text.strip(), master_audio_file, quick_transcript.file_path, quick_transcript.transcript_id
-                
+                # Check if we have real transcription content
+                if quick_transcript and quick_transcript.has_content:
+                    quick_transcript_text = quick_transcript.transcript_text.strip()
+                    quick_transcript_path = quick_transcript.file_path
+                    quick_transcript_id = quick_transcript.transcript_id
+                    debug_log.milestone(f"Quick transcript ready: {len(quick_transcript_text)} chars")
+                    
+                    # Copy to clipboard immediately
+                    if AUTO_COPY and quick_transcript_text:
+                        import pyperclip
+                        pyperclip.copy(quick_transcript_text)
+                        print("📋 Quick transcript copied to clipboard.")
+                        debug_log.detail("Quick transcript copied to clipboard")
+                    
+                    safety_net.complete_processing_attempt(
+                        session_id, streaming_attempt,
+                        output_files=[quick_transcript_path] if quick_transcript_path else [],
+                        success=True
+                    )
+                else:
+                    debug_log.warning("Quick transcript had no content, skipping to full transcription")
+                    safety_net.complete_processing_attempt(
+                        session_id, streaming_attempt, success=False,
+                        error_message="No quick content"
+                    )
             else:
-                # Streaming failed - fall back to full-file transcription
-                loader.update("🔄 Running fallback transcription...")
-                
-                # Mark streaming attempt as failed
+                # For <90s recordings: Skip streaming entirely
+                debug_log.milestone("Skipping streaming for short recording, going directly to full transcription")
                 safety_net.complete_processing_attempt(
                     session_id, streaming_attempt, success=False,
-                    error_message="No segments detected"
+                    error_message="Recording too short for streaming"
                 )
+            
+            # Now run full-file Whisper transcription (for all recordings)
+            loader.update("🔄 Running full audio transcription...")
+            debug_log.milestone("Starting full Whisper transcription")
+            
+            try:
+                import whisper
+                whisper_model = whisper.load_model(WHISPER_MODEL)
+                debug_log.detail(f"Loaded Whisper model: {WHISPER_MODEL}")
                 
-                # Try full-file Whisper transcription as fallback
-                try:
-                    import whisper
-                    whisper_model = whisper.load_model(WHISPER_MODEL)
-                    result = whisper_model.transcribe(str(master_audio_file), language=WHISPER_LANGUAGE)
-                    fallback_text = result['text'].strip()
-                    
-                    if fallback_text:
-                        
-                        # Mark fallback as successful
-                        fallback_attempt = safety_net.register_processing_attempt(
-                            session_id, "fallback", {"audio_file": str(master_audio_file)}
-                        )
-                        safety_net.complete_processing_attempt(
-                            session_id, fallback_attempt, success=True,
-                            output_files=[str(master_audio_file)]
-                        )
-                        safety_net.complete_session(session_id, success=True, 
-                                                   final_output_files=[str(master_audio_file)])
-                        
-                        loader.stop()  # Clear loading indicator
-                        return fallback_text, master_audio_file, None, None
-                    
-                except Exception as fallback_error:
-                    pass
+                if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
+                    result = whisper_model.transcribe(str(master_audio_file), fp16=False, language=WHISPER_LANGUAGE)
+                else:
+                    result = whisper_model.transcribe(str(master_audio_file), fp16=False)
                 
-                # Both streaming and fallback failed
+                full_transcript_text = result['text'].strip()
+                debug_log.milestone(f"Full transcription complete: {len(full_transcript_text)} chars")
+                
+                if full_transcript_text:
+                    # Mark full transcription as successful
+                    full_attempt = safety_net.register_processing_attempt(
+                        session_id, "full", {"audio_file": str(master_audio_file)}
+                    )
+                    safety_net.complete_processing_attempt(
+                        session_id, full_attempt, success=True,
+                        output_files=[str(master_audio_file)]
+                    )
+                    safety_net.complete_session(session_id, success=True, 
+                                               final_output_files=[str(master_audio_file)])
+                    
+                    loader.stop()
+                    debug_log.milestone("Transcription complete, returning results")
+                    
+                    # Return full transcript (it will be saved and processed by main())
+                    return full_transcript_text, master_audio_file, quick_transcript_path, quick_transcript_id
+                else:
+                    debug_log.error("Full transcription returned empty text")
+                    safety_net.complete_session(session_id, success=False)
+                    loader.stop()
+                    return None, None, None, None
+                    
+            except Exception as e:
+                debug_log.error(f"Full transcription failed: {e}")
                 safety_net.complete_session(session_id, success=False)
-                loader.stop()  # Clear loading indicator
+                loader.stop()
                 return None, None, None, None
         
         except Exception as e:
@@ -673,20 +708,34 @@ def main(args=None):
     # 2. Deduplicate transcript to remove any repetition from chunk overlap
     transcribed_text = deduplicate_transcript(transcribed_text)
 
-    # 3. Copy to clipboard immediately (before LLM processing)
-    if AUTO_COPY:
+    # 3. Copy full transcript to clipboard (if not already copied by quick transcript)
+    if AUTO_COPY and not existing_file_path:  # Only copy if quick didn't already
         pyperclip.copy(transcribed_text)
         print("📋 Transcription copied to clipboard.\n\n")
 
-    # 4. Save transcript with default filename first, then let AI rename it
-    # Check if streaming already created a transcript file
+    # 4. Save/update transcript with full transcription
+    file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+    
     if existing_file_path and existing_transcript_id:
         file_path = existing_file_path  
         transcript_id = existing_transcript_id
-    else:
-        # This is the fallback transcription path - create new transcript
-        print("�💾 Saving fallback transcript and audio...")
-        file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
+        print(f"💾 Updating transcript {transcript_id} with full transcription...")
+        
+        try:
+            # Update the transcript content
+            success = file_manager.update_transcript_content(file_path, transcribed_text)
+            if success:
+                print(f"✅ Full transcription saved to {transcript_id}")
+            else:
+                print(f"⚠️ Could not update transcript, creating new one...")
+                existing_file_path = None
+        except Exception as e:
+            print(f"⚠️ Error updating transcript: {e}, creating new one...")
+            existing_file_path = None
+    
+    if not existing_file_path:
+        # Create new transcript
+        print("💾 Saving transcript...")
         
         try:
             file_path, transcript_id = file_manager.create_new_transcript(
@@ -695,17 +744,23 @@ def main(args=None):
                 session_audio_file=master_audio_file
             )
             print(f"✅ Transcript {transcript_id} saved")
-            
-            # Clean up the session file after successful storage
-            if master_audio_file and master_audio_file.exists():
-                try:
-                    master_audio_file.unlink()  # Remove the temporary session file
-                except Exception as e:
-                    print(f"⚠️ Could not remove session file: {e}")
-                    
         except Exception as e:
             print(f"❌ Error saving transcript: {e}")
             return
+    
+    # Mark transcript as processed (full transcription complete)
+    try:
+        file_manager.update_transcript_status(file_path, "processed")
+    except Exception as e:
+        print(f"⚠️ Could not update transcript status: {e}")
+    
+    # Clean up master audio file if enabled
+    if AUTO_CLEANUP_AUDIO and master_audio_file and master_audio_file.exists():
+        try:
+            master_audio_file.unlink()
+            print("🗑️  Audio file cleaned up")
+        except Exception as e:
+            print(f"⚠️ Could not remove audio file: {e}")
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():

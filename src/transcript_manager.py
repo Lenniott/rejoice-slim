@@ -385,6 +385,90 @@ class TranscriptFileManager:
         transcripts.sort(key=lambda x: x[2], reverse=True)
         return transcripts
     
+    def update_transcript_content(self, file_path: str, transcript_text: str) -> bool:
+        """
+        Update an existing transcript file with new content while preserving header metadata.
+        
+        Args:
+            file_path: Path to the transcript file
+            transcript_text: New transcription text to write
+        
+        Returns:
+            bool: True if update succeeded, False otherwise
+        """
+        if not file_path or not os.path.exists(file_path):
+            return False
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            header_data = TranscriptHeader.parse_header(content)
+            if not header_data or 'id' not in header_data:
+                return False
+            
+            transcript_id = str(header_data['id'])
+            creation_date = None
+            if 'created' in header_data:
+                try:
+                    from datetime import datetime
+                    creation_date = datetime.fromisoformat(header_data['created'])
+                except (ValueError, TypeError):
+                    pass
+            
+            header = TranscriptHeader(transcript_id, creation_date)
+            new_content = header.create_file_content(transcript_text.strip(), self.output_format)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            
+            return True
+        except Exception:
+            return False
+    
+    def update_transcript_status(self, file_path: str, status: str) -> bool:
+        """
+        Update the status field in a transcript's YAML frontmatter.
+        
+        Args:
+            file_path: Path to the transcript file
+            status: New status value (e.g., "raw", "processed")
+        
+        Returns:
+            bool: True if update succeeded, False otherwise
+        """
+        if not file_path or not os.path.exists(file_path):
+            return False
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            header_data = TranscriptHeader.parse_header(content)
+            if not header_data:
+                return False
+            
+            # Update status in header
+            header_data['status'] = status
+            
+            # Regenerate YAML
+            import yaml
+            yaml_content = yaml.dump(header_data, default_flow_style=False, sort_keys=False)
+            
+            # Replace old frontmatter with updated one
+            import re
+            yaml_pattern = re.compile(r'^---\s*\n(.*?)\n---\s*\n', re.MULTILINE | re.DOTALL)
+            content_after_frontmatter = yaml_pattern.sub('', content, count=1)
+            
+            new_content = f"---\n{yaml_content}---\n{content_after_frontmatter}"
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            
+            return True
+        except Exception:
+            return False
+    
     def _is_valid_custom_id(self, custom_id: str) -> bool:
         """
         Validate custom ID format.
