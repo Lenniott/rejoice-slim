@@ -219,7 +219,6 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
     
     # Show initialization indicator
     if not debug:
-        from loading_indicator import LoadingIndicator
         indicator = LoadingIndicator("Initializing recording system...")
         indicator.start()
     
@@ -627,6 +626,11 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         return None, None, None, None
         
     except Exception as e:
+        # Log the actual error
+        print(f"\n❌ Recording failed: {e}")
+        if 'debug_log' in locals():
+            debug_log.error(f"Exception during recording: {e}")
+        
         # Only complete streaming attempt if it was registered
         if 'streaming_attempt' in locals() and streaming_attempt is not None:
             safety_net.complete_processing_attempt(
