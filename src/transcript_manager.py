@@ -68,7 +68,6 @@ class TranscriptFileManager:
         file_content = header.create_file_content(transcript_text, self.output_format)
         
         # Generate filename with new format: ID_DDMMYYYY_name.ext
-        from datetime import datetime
         date_str = datetime.now().strftime("%d%m%Y")
         clean_filename = self._clean_filename(generated_filename)
         filename = f"{transcript_id}_{date_str}_{clean_filename}.{self.output_format}"
