@@ -37,6 +37,7 @@ from volume_segmenter import VolumeSegmenter, SegmentProcessor
 from quick_transcript import QuickTranscriptAssembler
 from loading_indicator import LoadingIndicator
 from safety_net import SafetyNetManager
+from debug_logger import DebugLogger
 
 # Import settings module
 from settings import settings_menu
@@ -197,16 +198,16 @@ def _global_signal_handler(signum, frame):
         if _global_recording_state['recording_event']:
             _global_recording_state['recording_event'].clear()
 
-def record_audio_streaming(device_override: Optional[int] = None, verbose: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
+def record_audio_streaming(device_override: Optional[int] = None, debug: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
     """
     Records audio using the new streaming transcription system.
     Simplified version using sounddevice for compatibility.
     
     Returns:
-        Tuple[Optional[str], Optional[Path]]: (transcribed_text, master_audio_file_path)
+        Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]: (transcribed_text, master_audio_file_path, transcript_path, transcript_id)
     """
-    # Suppress all logging unless verbose mode is enabled
-    if not verbose:
+    # Suppress all logging unless debug mode is enabled
+    if not debug:
         import logging
         logging.getLogger('audio_buffer').setLevel(logging.ERROR)
         logging.getLogger('volume_segmenter').setLevel(logging.ERROR)
@@ -217,13 +218,17 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         warnings.filterwarnings("ignore")
     
     # Show initialization indicator
-    if not verbose:
+    if not debug:
         from loading_indicator import LoadingIndicator
         indicator = LoadingIndicator("Initializing recording system...")
         indicator.start()
     
     # Generate session ID
     session_id = f"stream_{int(time.time())}"
+    
+    # Initialize debug logger
+    debug_log = DebugLogger(session_id, SAVE_PATH or ".", enabled=debug)
+    debug_log.milestone("Recording session started")
     
     # Create master audio file for safety net
     temp_audio_dir = Path(SAVE_PATH or tempfile.gettempdir()) / "audio_sessions"
@@ -249,8 +254,10 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         volume_segmenter = VolumeSegmenter(
             audio_buffer=audio_buffer,
             config=volume_config,
-            verbose=verbose
+            verbose=debug
         )
+        
+        debug_log.detail(f"Initialized volume segmenter: min={STREAMING_MIN_SEGMENT_DURATION}s, target={STREAMING_TARGET_SEGMENT_DURATION}s, max={STREAMING_MAX_SEGMENT_DURATION}s")
         
         # Initialize audio segment processor
         segment_extractor = SegmentProcessor(audio_buffer)
@@ -281,10 +288,12 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         )
         
         # Initialize components without logging details
+        debug_log.detail("All streaming components initialized successfully")
         
     except Exception as e:
-        if not verbose:
+        if not debug:
             indicator.stop()
+        debug_log.error(f"Failed to initialize streaming components: {e}")
         print(f"❌ Failed to initialize streaming components: {e}")
         return None, None, None, None
     
@@ -307,8 +316,9 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             return False
     
     if not initialize_audio_writer():
-        if not verbose:
+        if not debug:
             indicator.stop()
+        debug_log.error("Failed to initialize audio writer")
         return None, None, None, None
     
     def keyboard_listener():
@@ -367,17 +377,18 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             # Add to circular buffer for streaming
             audio_buffer.write(audio_data)
             
-            # Optional verbose monitoring
-            if verbose and hasattr(audio_callback, 'call_count'):
+            # Optional debug monitoring
+            if debug and hasattr(audio_callback, 'call_count'):
                 audio_callback.call_count += 1
                 if audio_callback.call_count % 100 == 0:  # Every ~2 seconds
                     duration = audio_callback.call_count * frames / SAMPLE_RATE
                     print(f"🎙️  Recording: {duration:.1f}s", end='\r', flush=True)
-            elif verbose:
+            elif debug:
                 audio_callback.call_count = 1
                 
         except Exception as e:
-            if verbose:
+            debug_log.error(f"Audio callback error: {e}")
+            if debug:
                 print(f"⚠️ Audio callback error: {e}")
     
     try:
@@ -386,8 +397,10 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         keyboard_thread.start()
         
         # Stop initialization indicator
-        if not verbose:
+        if not debug:
             indicator.stop()
+        
+        debug_log.milestone("Recording initialized, starting audio capture")
         
         # Platform-specific instructions
         if sys.platform == "darwin":  # macOS
@@ -424,7 +437,8 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             try:
                 # First, analyze audio to detect new segments
                 new_segments = volume_segmenter.analyze_and_segment()
-                if verbose and new_segments:
+                debug_log.detail(f"Checked for new segments, found {len(new_segments)}")
+                if debug and new_segments:
                     print(f"\n🔍 Detected {len(new_segments)} new segments")
                 
                 # Get all detected segments
@@ -437,16 +451,20 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
                         if audio_data is not None:
                             assembler.add_segment_for_transcription(segment_info, audio_data)
                             segments_processed += 1
-                            if verbose:
+                            debug_log.detail(f"Processed segment {segments_processed}: {segment_info.duration:.1f}s")
+                            if debug:
                                 print(f"\n📦 Processed segment {segments_processed}: {segment_info.duration:.1f}s")
                         else:
-                            if verbose:
+                            debug_log.warning(f"Could not extract audio for segment {segments_processed}")
+                            if debug:
                                 print(f"⚠️ Could not extract audio for segment {segments_processed}")
                     except Exception as e:
-                        if verbose:
+                        debug_log.error(f"Segment processing error: {e}")
+                        if debug:
                             print(f"⚠️ Segment processing error: {e}")
             except Exception as e:
-                if verbose:
+                debug_log.error(f"Segmentation error: {e}")
+                if debug:
                     print(f"⚠️ Segmentation error: {e}")
             
             # Sleep briefly to prevent excessive CPU usage
@@ -487,16 +505,20 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
                         if audio_data is not None:
                             assembler.add_segment_for_transcription(segment_info, audio_data)
                             segments_processed += 1
-                            if verbose:
+                            debug_log.detail(f"Final segment: {segment_info.duration:.1f}s")
+                            if debug:
                                 print(f"📦 Final segment: {segment_info.duration:.1f}s")
                         else:
-                            if verbose:
+                            debug_log.warning("Could not extract final segment audio")
+                            if debug:
                                 print(f"⚠️ Could not extract final segment audio")
                     except Exception as e:
-                        if verbose:
+                        debug_log.error(f"Final segment error: {e}")
+                        if debug:
                             print(f"⚠️ Final segment error: {e}")
             except Exception as e:
-                if verbose:
+                debug_log.error(f"Final processing error: {e}")
+                if debug:
                     print(f"⚠️ Final processing error: {e}")
             
             # Finalize quick transcript
@@ -619,13 +641,14 @@ def main(args=None):
             args = type('Args', (), {})()
         
         # Use streaming transcription (now the default and only mode)
-        verbose = (hasattr(args, 'verbose') and args.verbose) or STREAMING_VERBOSE
+        # Support both --debug and --verbose (deprecated) flags
+        debug = (hasattr(args, 'debug') and args.debug) or (hasattr(args, 'verbose') and args.verbose) or STREAMING_VERBOSE
         
         print("🚀 Starting streaming transcription")
         
         # 1. Record Audio with streaming system
         device_override = args.device if hasattr(args, 'device') and args.device is not None else None
-        transcription_result = record_audio_streaming(device_override, verbose)
+        transcription_result = record_audio_streaming(device_override, debug)
         
         if len(transcription_result) == 4:
             transcribed_text, master_audio_file, existing_file_path, existing_transcript_id = transcription_result
@@ -722,8 +745,10 @@ if __name__ == "__main__":
                        help='Do not generate AI summary and tags')
     parser.add_argument('--device', type=int, 
                        help='Override default mic device for this recording')
+    parser.add_argument('--debug', '-d', action='store_true',
+                       help='Enable debug mode with detailed logging to file and console milestones')
     parser.add_argument('--verbose', action='store_true',
-                       help='Enable verbose monitoring output for streaming transcription')
+                       help='(Deprecated: use --debug) Enable debug mode')
     parser.add_argument('id_reference', nargs='?', 
                        help='Reference existing transcript by ID (e.g., -123456)')
     parser.add_argument('-l', '--list', action='store_true',
