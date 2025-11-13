@@ -16,7 +16,6 @@ rejoice/
 │   ├── audio_buffer.py          # Circular buffer for audio
 │   ├── volume_segmenter.py      # Real-time audio segmentation
 │   ├── quick_transcript.py      # Streaming transcription assembly
-│   ├── background_enhancer.py   # Post-processing enhancement
 │   ├── transcript_manager.py    # File & ID management
 │   ├── audio_manager.py         # Audio file handling
 │   ├── file_header.py           # Markdown header generation
@@ -101,7 +100,6 @@ Audio Input → CircularAudioBuffer → VolumeSegmenter → SegmentProcessor
                                             ↓
                                   Immediate Transcript (5-30s)
                                             ↓
-                                   BackgroundEnhancer
                                             ↓
                                   Enhanced Transcript (full quality)
 ```
@@ -126,11 +124,6 @@ Audio Input → CircularAudioBuffer → VolumeSegmenter → SegmentProcessor
 - Clipboard integration
 - Status tracking and callbacks
 
-**BackgroundEnhancer** (`background_enhancer.py`)
-- Queue-based enhancement system
-- Full audio transcription (higher quality)
-- AI metadata generation
-- Cleanup of temporary files
 
 ## File Management System
 

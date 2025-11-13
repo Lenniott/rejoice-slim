@@ -10,28 +10,18 @@ import subprocess
 import sounddevice as sd
 import numpy as np
 import whisper
-import requests
-import json
 import time
-from scipy.io.wavfile import write
-from datetime import datetime
 from dotenv import load_dotenv
 import tempfile
-import shutil
 import wave
 from pathlib import Path
 import pyperclip
 import argparse
 import threading
-import queue
 import logging
-import uuid
 import signal
 import select
-import termios
-import tty
 from typing import Optional, Dict, Any, Tuple
-from urllib.parse import urlparse
 
 # Import our new ID-based transcript management
 from transcript_manager import TranscriptFileManager, AudioFileManager
@@ -45,9 +35,8 @@ from summarization_service import get_summarizer
 from audio_buffer import CircularAudioBuffer
 from volume_segmenter import VolumeSegmenter, SegmentProcessor
 from quick_transcript import QuickTranscriptAssembler
-from background_enhancer import BackgroundEnhancer
 from loading_indicator import LoadingIndicator
-from safety_net import SafetyNetManager, SafetyNetIntegrator
+from safety_net import SafetyNetManager
 
 # Import settings module
 from settings import settings_menu
@@ -223,7 +212,6 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
         logging.getLogger('volume_segmenter').setLevel(logging.ERROR)
         logging.getLogger('safety_net').setLevel(logging.ERROR)
         logging.getLogger('quick_transcript').setLevel(logging.ERROR)
-        logging.getLogger('background_enhancer').setLevel(logging.ERROR)
         logging.getLogger('audio_manager').setLevel(logging.ERROR)
         import warnings
         warnings.filterwarnings("ignore")
@@ -291,20 +279,6 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
             audio_manager=audio_manager,
             auto_clipboard=AUTO_COPY
         )
-        
-        # Background enhancer for quality improvement
-        summarizer = get_summarizer()
-        def enhancement_completed(task):
-            """Callback when background enhancement completes."""
-            print(f"🎯 Background complete: enhanced transcript saved, audio cleaned up")
-        
-        enhancer = BackgroundEnhancer(
-            transcript_manager=file_manager,
-            audio_manager=audio_manager,
-            summarization_service=summarizer,
-            auto_cleanup=AUTO_CLEANUP_AUDIO
-        )
-        enhancer.task_completed_callback = enhancement_completed
         
         # Initialize components without logging details
         
@@ -540,13 +514,6 @@ def record_audio_streaming(device_override: Optional[int] = None, verbose: bool 
                     success=True
                 )
                 
-                # Start background enhancement
-                enhancement_attempt = safety_net.register_processing_attempt(
-                    session_id, "enhanced", {"master_audio": str(master_audio_file)}
-                )
-                
-                enhancer.queue_enhancement(quick_transcript, str(master_audio_file))
-                
                 # Complete safety net session
                 safety_net.complete_session(session_id, success=True, 
                                            final_output_files=[str(master_audio_file)])
@@ -726,8 +693,7 @@ def main(args=None):
             if success:
                 print("✅ Summary and tags added to transcript metadata")
                 
-                # Background enhancement (full audio transcription + cleanup) starts now
-                print("🔄 Starting background: full transcription → enhanced summary → audio cleanup...")
+
             else:
                 print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
