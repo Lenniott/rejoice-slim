@@ -10,19 +10,28 @@ Rejoice uses carefully selected packages for privacy, performance, and reliabili
 
 ### 🎤 Audio Processing
 ```python
-sounddevice==0.5.1
+sounddevice>=0.4.6
 # Real-time audio recording from microphone
 # Why: Cross-platform, low-latency audio capture
 # Privacy: Local only, no network access
-# Alternative: Built-in audio modules (but less reliable)
+# Works: Concurrent recording (Zoom, music, etc.)
 ```
 
 ```python
-numpy>=1.21.0
+numpy>=1.24.0
 # Numerical operations for audio data processing
-# Why: Efficient audio buffer manipulation, required by sounddevice
+# Why: Efficient audio buffer manipulation, required by sounddevice & Whisper
 # Privacy: Mathematical library, no data collection
 # Size: ~20MB, fundamental to audio processing
+```
+
+```python
+scipy>=1.11.0
+# Scientific computing library for audio operations
+# Why: Audio file format support (WAV, MP3, etc.)
+# Usage: Required by sounddevice for sample rate conversion
+# Privacy: Mathematical library, no data collection
+# Size: ~50MB, handles audio format conversions
 ```
 
 ### 🤖 AI Transcription
@@ -39,7 +48,8 @@ openai-whisper>=20231117
 torch>=2.0.0
 # PyTorch machine learning framework (required by Whisper)
 # Why: Whisper models run on PyTorch for AI inference
-# Privacy: Local computation only, no telemetry  
+# Privacy: Local computation only, no telemetry
+# Installation: Auto-installed as Whisper dependency (not in requirements.txt)
 # Size: ~800MB-2GB depending on your system (CPU vs GPU)
 # Note: Large but essential for AI model execution
 ```
@@ -54,31 +64,36 @@ python-dotenv>=1.0.0
 ```
 
 ```python
-pyyaml>=6.0
+PyYAML>=6.0
 # YAML parsing for transcript file headers
-# Why: Creates structured frontmatter with ID, title, creation date
+# Why: Creates structured frontmatter with ID, title, creation date, status
 # Privacy: Local file processing only
 # Usage: Enables ID-based transcript system with metadata
+# Size: <1MB, lightweight text processing
 # Alternative: JSON (but YAML is more human-readable for frontmatter)
 ```
 
 ### 🌐 Local AI Integration (Optional)
 ```python
-requests>=2.31.0
+requests>=2.25.1
 # HTTP client for Ollama API communication
 # Why: Communicate with local Ollama instance (localhost:11434)
+# Usage: AI-generated filenames and summaries
 # Privacy: ONLY connects to localhost - no external requests
 # Security: All traffic stays on your computer
 # Without Ollama: This dependency is unused, no network activity
+# Size: <1MB, lightweight HTTP client
 ```
 
 ### 🖥️ System Integration
 ```python
-pyaudio>=0.2.11
-# Alternative audio backend (fallback for sounddevice)
-# Why: Backup audio system if sounddevice fails
-# Privacy: Local hardware access only
-# Platform: May require additional system libraries
+pyperclip>=1.8.2
+# Clipboard integration for auto-copy feature
+# Why: Automatically copy transcripts to clipboard after recording
+# Privacy: Local system clipboard only, no network access
+# Platform: Cross-platform clipboard support
+# Optional: Can be disabled via AUTO_COPY=false
+# Size: <100KB, pure system integration
 ```
 
 ## 🖥️ System Dependencies
@@ -162,16 +177,17 @@ For AI-generated filenames and metadata:
 - ✅ **Zero external requests** (except to localhost Ollama)
 
 ### Network Activity Verification
-The only network request is to `localhost:11434` (local Ollama):
+The only network requests are to `localhost:11434` (local Ollama, if enabled):
 ```python
-# From src/transcribe.py line 38
-response = requests.post("http://localhost:11434/api/chat", ...)
+# From src/summarization_service.py
+response = requests.get("http://localhost:11434/api/version", ...)  # Check if Ollama is running
+response = requests.post("http://localhost:11434/api/generate", ...)  # Generate summaries/tags
 ```
 
 You can verify this by:
-1. **Reading the source code** - All network requests visible
+1. **Reading the source code** - All network requests are visible and localhost-only
 2. **Network monitoring** - Use tools like Little Snitch, Wireshark
-3. **Offline testing** - Disconnect internet, transcription still works
+3. **Offline testing** - Disconnect internet, transcription still works (AI features require Ollama)
 
 ### Package Security
 - **All packages from PyPI** - Official Python package repository
@@ -249,22 +265,25 @@ brew uninstall portaudio
 
 ## 🔧 Alternative Configurations
 
-### Minimal Setup (Python only)
+### Minimal Setup (Transcription only)
 ```bash
-pip install openai-whisper sounddevice numpy
-# ~300MB total, basic transcription only
+pip install openai-whisper sounddevice scipy numpy python-dotenv
+# ~300MB total, basic transcription with timestamp filenames
 ```
 
-### Audio-Only (No Homebrew)
+### Full Features (Without Ollama)
 ```bash
 pip install -r requirements.txt
-# May have audio compatibility issues
+# All features except AI-generated filenames/summaries
+# Uses ID_DATE_transcript.md format for files
 ```
 
-### No AI Features
+### AI-Enhanced Setup (Recommended)
 ```bash
-pip install openai-whisper sounddevice numpy python-dotenv
-# Skip Ollama, requests - timestamp-only filenames
+pip install -r requirements.txt
+brew install ollama  # or download from ollama.ai
+ollama pull gemma3:4b
+# Full features with smart filenames and summaries
 ```
 
 ---
