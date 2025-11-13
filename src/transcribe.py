@@ -274,9 +274,6 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         
         # Start safety net session
         safety_record = safety_net.start_session(session_id, str(master_audio_file))
-        streaming_attempt = safety_net.register_processing_attempt(
-            session_id, "streaming", {"buffer_size": STREAMING_BUFFER_SIZE_SECONDS}
-        )
         
         # Quick transcript assembler
         file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
@@ -500,8 +497,14 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             quick_transcript_text = None
             quick_transcript_path = None
             quick_transcript_id = None
+            streaming_attempt = None  # Will be set if we use streaming
             
             if use_streaming:
+                # Register streaming attempt only for long recordings
+                streaming_attempt = safety_net.register_processing_attempt(
+                    session_id, "streaming", {"buffer_size": STREAMING_BUFFER_SIZE_SECONDS}
+                )
+                
                 # For recordings >= 90s: Process streaming segments first for quick transcript
                 loader.update("🔍 Analyzing segments...")
                 debug_log.milestone("Processing quick transcript from streaming segments")
@@ -568,10 +571,7 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             else:
                 # For <90s recordings: Skip streaming entirely
                 debug_log.milestone("Skipping streaming for short recording, going directly to full transcription")
-                safety_net.complete_processing_attempt(
-                    session_id, streaming_attempt, success=False,
-                    error_message="Recording too short for streaming"
-                )
+                # No streaming attempt registered, so nothing to complete
             
             # Now run full-file Whisper transcription (for all recordings)
             loader.update("🔄 Running full audio transcription...")
@@ -627,10 +627,12 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         return None, None, None, None
         
     except Exception as e:
-        safety_net.complete_processing_attempt(
-            session_id, streaming_attempt, success=False,
-            error_message=str(e)
-        )
+        # Only complete streaming attempt if it was registered
+        if 'streaming_attempt' in locals() and streaming_attempt is not None:
+            safety_net.complete_processing_attempt(
+                session_id, streaming_attempt, success=False,
+                error_message=str(e)
+            )
         safety_net.complete_session(session_id, success=False)
         return None, None, None, None
     
