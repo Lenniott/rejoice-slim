@@ -1,5 +1,44 @@
 # Changelog
 
+## Version 2.2.0 - Modular Architecture Refactor (2025-11-12)
+
+### 🏗️ Major Code Cleanup and Modularization
+
+**Architecture Improvements:**
+- Reduced `transcribe.py` from 2,064 lines to 809 lines (61% reduction)
+- Extracted 632 lines into dedicated `settings.py` module
+- Extracted 568 lines into dedicated `commands.py` module
+- Created `ARCHITECTURE.md` documentation for developers
+- Removed dead code and unused modules (audio_chunker, transcription_worker, vad_service, templates.json)
+
+**Code Quality:**
+- Implemented factory pattern for `SummarizationService` via `get_summarizer()`
+- Eliminated 3 duplicate service instantiations
+- Separated concerns: recording logic, commands, and settings now in distinct modules
+- Improved testability by making commands receive parameters instead of using globals
+- Cleaner imports and better code organization
+
+**Module Structure:**
+- **transcribe.py**: Core recording loop, signal handling, CLI routing
+- **commands.py**: All CLI command implementations (list, view, append, etc.)
+- **settings.py**: Interactive settings menu and .env management
+- **summarization_service.py**: AI analysis with centralized factory function
+
+**Developer Experience:**
+- Added comprehensive architecture documentation
+- Better separation of concerns for easier maintenance
+- Modular design makes testing and extending features simpler
+- Clear function signatures with explicit dependencies
+
+**Testing:**
+- All integration tests passing
+- Verified commands: `--list`, `--view`, `--audio`, `--settings`, `--open-folder`
+- No functional changes - pure refactoring for code quality
+
+See `CLEANUP_SUMMARY.md` and `ARCHITECTURE.md` for detailed breakdown.
+
+---
+
 ## Version 2.1.0 - AI Hierarchical Analysis & CLI Improvements (2025-10-22)
 
 ### 🤖 Advanced AI Analysis System

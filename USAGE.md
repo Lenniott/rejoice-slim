@@ -39,16 +39,32 @@ we need to hit for the Q4 release...
 
 After installation, you get these commands:
 
-### `rec` - Start Recording
+### Quick Reference
 ```bash
-rec                    # Basic recording with all features
-rec -l / --list       # List all transcripts (both new and legacy)
-rec -v 000042         # View transcript content by ID  
-rec --view 000042     # Same as above (long form)
-rec -g 000042         # AI analysis: themes, questions, actions
-rec --genai 000042    # Same as above (long form) 
-rec -s / --settings   # Configure settings interactively
-rec -000042           # Reference/append to existing transcript
+# Recording
+rec                         # Start recording
+rec ID                      # Append to existing transcript
+
+# Viewing
+rec -l / --list            # List all transcripts
+rec -v ID / --view ID      # View transcript content
+rec --audio ID             # Show audio files for transcript
+rec -o / --open-folder     # Open transcripts folder
+
+# AI Analysis
+rec -g ID / --genai ID     # AI analysis: themes, questions, actions
+rec -g /path/to/file.md    # Analyze any text file
+
+# Reprocessing
+rec --reprocess ID         # Reprocess transcript audio
+rec --reprocess-failed     # Process orphaned audio files
+
+# Recovery
+rec -ls / --list-sessions  # List interrupted sessions
+rec -r / --recover         # Recover latest session
+
+# Settings
+rec -s / --settings        # Configure interactively
 ```
 
 ### 🤖 AI Analysis Features
@@ -72,17 +88,68 @@ rec --genai /path/to/notes.txt  # Long form command
 # - Handles files up to 30k+ characters efficiently
 ```
 
-### New ID-Based System
+### 🔗 Appending to Existing Transcripts
 ```bash
-rec                   # Creates new transcript (e.g., meeting-notes_22102025_000001.md)
-rec -000042           # Record and append to existing transcript 000042
-rec --list            # Show all transcripts with their IDs
-rec --show 000042     # Display content of transcript 000042
+# Create a new transcript
+rec                   # Creates: meeting-notes_22102025_000001.md
+
+# Append to an existing transcript by ID
+rec 000042            # Record more audio and add to transcript 000042
+rec 1                 # Works with short IDs too
+
+# View and manage
+rec -l                # List all transcripts with their IDs
+rec -v 000042         # View transcript content
 ```
 
-### Additional Commands
+**How appending works:**
+1. Shows preview of existing transcript content
+2. Records new audio
+3. Appends new transcription to the same file
+4. Preserves all audio files linked to that transcript ID
+
+### 🔍 Viewing & Managing Transcripts
 ```bash
-rec -o                # Opens your transcripts folder in Finder/Explorer
+rec -l / --list              # List all transcripts with IDs
+rec -v ID / --view ID        # View transcript content by ID
+rec --audio ID               # Show audio files for transcript ID
+rec -o / --open-folder       # Open transcripts folder
+```
+
+### 🔄 Reprocessing Commands
+```bash
+rec --reprocess ID           # Reprocess all audio for transcript ID
+                            # - Re-transcribes all audio files
+                            # - Generates fresh AI summary
+                            # - Creates new version by default
+
+rec --reprocess ID --overwrite  # Overwrite existing transcript
+                                # - Replaces original instead of creating new
+
+rec --reprocess-failed       # Process orphaned audio files
+                            # - Finds audio files without transcripts
+                            # - Creates new transcripts for them
+```
+
+### 💾 Recovery Commands
+```bash
+rec -ls / --list-sessions    # List interrupted recording sessions
+rec -r / --recover           # Recover latest interrupted session
+rec -r ID / --recover ID     # Recover specific session by ID
+```
+
+**When to use recovery:**
+- If recording was interrupted (crash, Ctrl+C, power loss)
+- Audio is preserved in temporary session files
+- Can transcribe the full audio even after interruption
+
+### 🎛️ Recording Options
+```bash
+rec --verbose               # Enable detailed streaming transcription output
+rec --device N              # Use specific microphone (N = device number)
+rec --copy / --no-copy     # Override clipboard auto-copy setting
+rec --open / --no-open     # Override auto-open file setting
+rec --metadata / --no-metadata  # Override AI metadata generation
 ```
 
 ## 📝 Understanding Output

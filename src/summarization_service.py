@@ -11,6 +11,7 @@ import yaml
 import re
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
+from dotenv import load_dotenv
 from file_header import TranscriptHeader
 
 
@@ -518,6 +519,7 @@ JSON:"""
                     new_output_path = self._rename_transcript_with_ai_filename(file_path, metadata['filename'], frontmatter_data)
                     if new_output_path and new_output_path != file_path:
                         output_path = new_output_path
+                        print(f"\n\n📝 Renamed: {os.path.basename(file_path)} → {os.path.basename(output_path)}")
             
             # Write updated content
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -700,3 +702,32 @@ JSON:"""
         except Exception as e:
             print(f"   ⚠️ Could not rename file: {e}")
             return None
+
+
+def get_summarizer(ollama_model=None, ollama_api_url=None, 
+                   ollama_timeout=None, max_content_length=None, notes_folder=None):
+    """
+    Factory function to create configured SummarizationService instance.
+    Loads defaults from environment variables if not provided.
+    
+    Args:
+        ollama_model: Ollama model name (default: from OLLAMA_MODEL env)
+        ollama_api_url: Ollama API URL (default: from OLLAMA_API_URL env)
+        ollama_timeout: Timeout in seconds (default: from OLLAMA_TIMEOUT env)
+        max_content_length: Max content length (default: from OLLAMA_MAX_CONTENT_LENGTH env)
+        notes_folder: Optional notes folder path
+        
+    Returns:
+        SummarizationService: Configured service instance
+    """
+    # Load environment variables
+    env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    load_dotenv(dotenv_path=env_path)
+    
+    return SummarizationService(
+        ollama_model=ollama_model or os.getenv("OLLAMA_MODEL", "gemma3:4b"),
+        ollama_api_url=ollama_api_url or os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate"),
+        ollama_timeout=ollama_timeout or int(os.getenv("OLLAMA_TIMEOUT", "180")),
+        max_content_length=max_content_length or int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000")),
+        notes_folder=notes_folder
+    )
