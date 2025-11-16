@@ -6,12 +6,16 @@ Handles YAML front matter with ID and metadata.
 import os
 import yaml
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
+import copy
 
 
 class TranscriptHeader:
     """Manages YAML front matter for transcript files."""
+    
+    # Class-level cache for template configuration
+    _template_cache: Optional[Dict] = None
     
     def __init__(self, transcript_id: str, creation_date: Optional[datetime] = None):
         """
@@ -24,22 +28,112 @@ class TranscriptHeader:
         self.transcript_id = transcript_id
         self.creation_date = creation_date or datetime.now()
     
+    @classmethod
+    def _load_template_config(cls) -> Dict:
+        """
+        Load template configuration from template_config.yaml.
+        Uses class-level caching to avoid repeated file reads.
+        
+        Returns:
+            dict: Template configuration
+        """
+        if cls._template_cache is not None:
+            return cls._template_cache
+        
+        # Get path to template config (in project root)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        template_path = os.path.join(project_root, 'template_config.yaml')
+        
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                cls._template_cache = config
+                return config
+        except (IOError, OSError, yaml.YAMLError) as e:
+            # Fallback to default template if config file not found
+            print(f"Warning: Could not load template_config.yaml: {e}")
+            print("Using default template structure.")
+            cls._template_cache = {
+                'frontmatter_template': {
+                    'area': '',
+                    'category': '',
+                    'id': '{{id}}',
+                    'type': '',
+                    'status': 'draft',
+                    'linked': [],
+                    'tags': [],
+                    'created': '{{created}}',
+                    'archive_by': '{{archive_by}}'
+                }
+            }
+            return cls._template_cache
+    
+    def _replace_placeholders(self, template_data: Dict) -> Dict:
+        """
+        Replace template placeholders with actual values.
+        
+        Available placeholders:
+        - {{id}}         : 6-digit transcript ID
+        - {{created}}    : ISO format creation timestamp (YYYY-MM-DD HH:mm)
+        - {{archive_by}} : Date 30 days from creation (YYYY-MM-DD)
+        
+        Args:
+            template_data: Template dictionary with placeholders
+            
+        Returns:
+            dict: Template with placeholders replaced
+        """
+        # Create a deep copy to avoid modifying the cached template
+        data = copy.deepcopy(template_data)
+        
+        # Calculate values for placeholders
+        created_str = self.creation_date.strftime('%Y-%m-%d %H:%M')
+        archive_by_date = self.creation_date + timedelta(days=30)
+        archive_by_str = archive_by_date.strftime('%Y-%m-%d')
+        
+        # Replacement map
+        replacements = {
+            '{{id}}': self.transcript_id,
+            '{{created}}': created_str,
+            '{{archive_by}}': archive_by_str
+        }
+        
+        # Recursively replace placeholders in the dictionary
+        def replace_in_value(value):
+            if isinstance(value, str):
+                for placeholder, replacement in replacements.items():
+                    value = value.replace(placeholder, replacement)
+                return value
+            elif isinstance(value, dict):
+                return {k: replace_in_value(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [replace_in_value(item) for item in value]
+            return value
+        
+        return replace_in_value(data)
+    
     def generate_header_yaml(self) -> str:
         """
-        Generate YAML front matter header.
+        Generate YAML front matter header using template from template_config.yaml.
+        
+        The template supports placeholders that are automatically replaced:
+        - {{id}}         : 6-digit transcript ID
+        - {{created}}    : ISO format creation timestamp (YYYY-MM-DD HH:mm)
+        - {{archive_by}} : Date 30 days from creation (YYYY-MM-DD)
         
         Returns:
             str: YAML front matter as string
         """
-        header_data = {
-            'id': self.transcript_id,
-            'title': self.transcript_id,  # Title is same as ID per requirements
-            'created': self.creation_date.isoformat(),
-            'status': 'raw'
-        }
+        # Load template configuration
+        config = self._load_template_config()
+        template = config.get('frontmatter_template', {})
+        
+        # Replace placeholders with actual values
+        header_data = self._replace_placeholders(template)
         
         # Generate YAML with proper formatting
-        yaml_content = yaml.dump(header_data, default_flow_style=False, sort_keys=False)
+        yaml_content = yaml.dump(header_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
         
         return f"---\n{yaml_content}---\n\n"
     

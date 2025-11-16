@@ -414,7 +414,7 @@ class QuickTranscriptAssembler:
         }
         
         # Save using transcript manager
-        file_path, transcript_id = self.transcript_manager.create_new_transcript(
+        file_path, transcript_id, _ = self.transcript_manager.create_new_transcript(
             transcript_text,
             generated_filename="streaming_transcript"
         )

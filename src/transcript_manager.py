@@ -36,7 +36,7 @@ class TranscriptFileManager:
     def create_new_transcript(self, transcript_text: str, 
                             generated_filename: str = "transcript",
                             custom_id: Optional[str] = None,
-                            session_audio_file: Optional[Path] = None) -> Tuple[str, str]:
+                            session_audio_file: Optional[Path] = None) -> Tuple[str, str, Optional[str]]:
         """
         Create a new transcript file with the new naming format and optionally store associated audio.
         Format: {id}_DDMMYYYY_{generated_filename}.{ext}
@@ -48,7 +48,10 @@ class TranscriptFileManager:
             session_audio_file: Optional path to session audio file to store permanently
             
         Returns:
-            tuple: (file_path, transcript_id)
+            tuple: (file_path, transcript_id, stored_audio_path)
+                - file_path: Path to the created transcript file
+                - transcript_id: The transcript ID
+                - stored_audio_path: Path to stored audio file (None if not stored)
             
         Raises:
             ValueError: If custom_id is invalid or already exists
@@ -88,7 +91,7 @@ class TranscriptFileManager:
             else:
                 print("⚠️ Failed to store audio file")
         
-        return file_path, transcript_id
+        return file_path, transcript_id, audio_file_path
     
     def find_transcript(self, id_reference: str) -> Optional[str]:
         """
@@ -597,7 +600,7 @@ class TranscriptFileManager:
         if not overwrite_existing or not transcript_path:
             try:
                 # Create new transcript
-                transcript_path, new_id = self.create_new_transcript(
+                transcript_path, new_id, _ = self.create_new_transcript(
                     combined_transcript, 
                     generated_filename
                 )

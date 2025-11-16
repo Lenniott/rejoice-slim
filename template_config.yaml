@@ -1,0 +1,22 @@
+# Template Configuration for Transcript Files
+# This file defines the YAML frontmatter structure for transcript files.
+#
+# Available Placeholders:
+# - {{id}}         : 6-digit transcript ID (automatically generated)
+# - {{created}}    : ISO format creation timestamp (YYYY-MM-DD HH:mm:ss format)
+# - {{archive_by}} : Date 30 days from creation (YYYY-MM-DD format)
+#
+# You can modify the structure below to customize your frontmatter template.
+# Any field can be left empty (""), set as a list ([]), or use a placeholder.
+
+frontmatter_template:
+  area: ""
+  category: ""
+  id: "{{id}}"
+  type: ""
+  status: "draft"
+  linked: []
+  tags: []
+  created: "{{created}}"
+  archive_by: "{{archive_by}}"
+

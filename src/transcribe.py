@@ -738,12 +738,13 @@ def main(args=None):
             print(f"⚠️ Error updating transcript: {e}, creating new one...")
             existing_file_path = None
     
+    stored_audio_path = None
     if not existing_file_path:
         # Create new transcript
         print("💾 Saving transcript...")
         
         try:
-            file_path, transcript_id = file_manager.create_new_transcript(
+            file_path, transcript_id, stored_audio_path = file_manager.create_new_transcript(
                 transcribed_text, 
                 "transcript",  # Use default name initially
                 session_audio_file=master_audio_file
@@ -759,13 +760,29 @@ def main(args=None):
     except Exception as e:
         print(f"⚠️ Could not update transcript status: {e}")
     
-    # Clean up master audio file if enabled
-    if AUTO_CLEANUP_AUDIO and master_audio_file and master_audio_file.exists():
-        try:
-            master_audio_file.unlink()
-            print("🗑️  Audio file cleaned up")
-        except Exception as e:
-            print(f"⚠️ Could not remove audio file: {e}")
+    # Clean up audio files if enabled (both session and stored files)
+    if AUTO_CLEANUP_AUDIO:
+        files_cleaned = 0
+        
+        # Clean up session audio file (in audio_sessions/)
+        if master_audio_file and master_audio_file.exists():
+            try:
+                master_audio_file.unlink()
+                files_cleaned += 1
+            except Exception as e:
+                print(f"⚠️ Could not remove session audio file: {e}")
+        
+        # Clean up stored audio file (in audio/)
+        # Only needed for recovery if transcription fails - safe to delete after success
+        if stored_audio_path and os.path.exists(stored_audio_path):
+            try:
+                os.remove(stored_audio_path)
+                files_cleaned += 1
+            except Exception as e:
+                print(f"⚠️ Could not remove stored audio file: {e}")
+        
+        if files_cleaned > 0:
+            print(f"🗑️  Audio file{'s' if files_cleaned > 1 else ''} cleaned up")
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():

@@ -541,7 +541,7 @@ def recover_session(session_id_or_latest, save_path, output_format, sample_rate,
         if transcript and transcript.strip():
             # Save transcript normally
             file_manager = TranscriptFileManager(save_path, output_format)
-            file_path, transcript_id = file_manager.create_new_transcript(transcript.strip(), "recovered_recording")
+            file_path, transcript_id, _ = file_manager.create_new_transcript(transcript.strip(), "recovered_recording")
             
             print(f"✅ Recovery successful!")
             print(f"📄 Transcript {transcript_id} saved: {file_path}")
