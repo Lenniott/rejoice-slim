@@ -237,12 +237,22 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
     # Determine audio device first (before try block so it's accessible everywhere)
     device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
     
-    # Initialize resampling variables that will be set per-device in the fallback loop
-    # These MUST be initialized here so the audio_callback can access them as closure variables
-    # Each device will update these with its own native sample rate
-    native_sample_rate = SAMPLE_RATE  # Default to no resampling
-    resample_ratio = 1.0
-    needs_resampling = False
+    # Detect native sample rate of the device (critical for hardware compatibility)
+    try:
+        device_info = sd.query_devices(device, 'input')
+        native_sample_rate = int(device_info['default_samplerate'])
+        debug_log.detail(f"Detected native sample rate: {native_sample_rate} Hz for device: {device_info['name']}")
+    except Exception as e:
+        # Fallback to common Mac default
+        native_sample_rate = 48000
+        debug_log.detail(f"Could not detect sample rate, using default: {native_sample_rate} Hz")
+    
+    # Calculate resampling ratio if needed
+    resample_ratio = SAMPLE_RATE / native_sample_rate if native_sample_rate != SAMPLE_RATE else 1.0
+    needs_resampling = resample_ratio != 1.0
+    
+    if needs_resampling:
+        debug_log.detail(f"Will resample from {native_sample_rate} Hz to {SAMPLE_RATE} Hz (ratio: {resample_ratio:.4f})")
     
     # Initialize components
     try:
