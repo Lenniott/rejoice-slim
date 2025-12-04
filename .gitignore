@@ -1,5 +1,4 @@
 .env
 /venv
-.cursor/plans
-.cursor/*
-.plan.md
+.cursor/
+*.plan.md
