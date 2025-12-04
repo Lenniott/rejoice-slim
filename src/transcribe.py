@@ -234,9 +234,30 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
     temp_audio_dir.mkdir(exist_ok=True)
     master_audio_file = temp_audio_dir / f"{session_id}.wav"
     
+    # Determine audio device first (before try block so it's accessible everywhere)
+    device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
+    
+    # Detect native sample rate of the device (critical for hardware compatibility)
+    try:
+        device_info = sd.query_devices(device, 'input')
+        native_sample_rate = int(device_info['default_samplerate'])
+        debug_log.detail(f"Detected native sample rate: {native_sample_rate} Hz for device: {device_info['name']}")
+    except Exception as e:
+        # Fallback to common Mac default
+        native_sample_rate = 48000
+        debug_log.detail(f"Could not detect sample rate, using default: {native_sample_rate} Hz")
+    
+    # Calculate resampling ratio if needed
+    resample_ratio = SAMPLE_RATE / native_sample_rate if native_sample_rate != SAMPLE_RATE else 1.0
+    needs_resampling = resample_ratio != 1.0
+    
+    if needs_resampling:
+        debug_log.detail(f"Will resample from {native_sample_rate} Hz to {SAMPLE_RATE} Hz (ratio: {resample_ratio:.4f})")
+    
     # Initialize components
     try:
-        # Audio buffer (5-minute rolling buffer)
+        
+        # Audio buffer (5-minute rolling buffer) - always use Whisper's expected rate
         audio_buffer = CircularAudioBuffer(
             capacity_seconds=STREAMING_BUFFER_SIZE_SECONDS,
             sample_rate=SAMPLE_RATE,
@@ -259,9 +280,6 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         
         # Initialize audio segment processor
         segment_extractor = SegmentProcessor(audio_buffer)
-        
-        # Determine audio device
-        device = device_override if device_override is not None else (None if DEFAULT_MIC_DEVICE == -1 else DEFAULT_MIC_DEVICE)
         
         # Initialize safety net
         safety_net = SafetyNetManager(
@@ -364,19 +382,33 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             # Convert to flat mono array
             audio_data = indata.flatten()
             
-            # Write to master file immediately
-            audio_16bit = (audio_data * 32767).astype(np.int16)
+            # Resample if needed (from native rate to Whisper's 16kHz)
+            if needs_resampling:
+                # Simple linear interpolation resampling
+                original_length = len(audio_data)
+                target_length = int(original_length * resample_ratio)
+                resampled_audio = np.interp(
+                    np.linspace(0, original_length, target_length),
+                    np.arange(original_length),
+                    audio_data
+                )
+                audio_data_16k = resampled_audio
+            else:
+                audio_data_16k = audio_data
+            
+            # Write to master file immediately (at 16kHz for Whisper compatibility)
+            audio_16bit = (audio_data_16k * 32767).astype(np.int16)
             audio_writer.writeframes(audio_16bit.tobytes())
             audio_writer._file.flush()
             
-            # Add to circular buffer for streaming
-            audio_buffer.write(audio_data)
+            # Add to circular buffer for streaming (already resampled to 16kHz)
+            audio_buffer.write(audio_data_16k)
             
             # Optional debug monitoring
             if debug and hasattr(audio_callback, 'call_count'):
                 audio_callback.call_count += 1
                 if audio_callback.call_count % 100 == 0:  # Every ~2 seconds
-                    duration = audio_callback.call_count * frames / SAMPLE_RATE
+                    duration = audio_callback.call_count * frames / native_sample_rate
                     print(f"🎙️  Recording: {duration:.1f}s", end='\r', flush=True)
             elif debug:
                 audio_callback.call_count = 1
@@ -410,14 +442,74 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         volume_segmenter.start_analysis()
         assembler.start_session(session_id)
         
-        stream = sd.InputStream(
-            samplerate=SAMPLE_RATE, 
-            channels=1, 
-            callback=audio_callback,
-            device=device,
-            blocksize=1024
-        )
-        stream.start()
+        # Open stream at native sample rate (what hardware supports)
+        # Try the specified device, with fallback to other devices if it fails
+        stream = None
+        tried_devices = []
+        
+        # Get list of available input devices for fallback
+        available_devices = []
+        all_devices = sd.query_devices()
+        for i, dev in enumerate(all_devices):
+            if dev['max_input_channels'] > 0:
+                available_devices.append(i)
+        
+        # Build list of devices to try (primary device first, then fallbacks)
+        devices_to_try = []
+        if device is not None:
+            devices_to_try.append(device)
+        # Add other available devices as fallbacks
+        for fallback_dev in available_devices:
+            if fallback_dev not in devices_to_try:
+                devices_to_try.append(fallback_dev)
+        
+        # Try each device until one works
+        for try_device in devices_to_try:
+            try:
+                tried_devices.append(try_device)
+                device_name = sd.query_devices(try_device)['name']
+                
+                if debug:
+                    print(f"🎤 Trying device {try_device}: {device_name}")
+                
+                stream = sd.InputStream(
+                    samplerate=native_sample_rate, 
+                    channels=1, 
+                    callback=audio_callback,
+                    device=try_device,
+                    blocksize=1024
+                )
+                stream.start()
+                
+                # Success!
+                debug_log.detail(f"Successfully opened audio stream on device {try_device}: {device_name}")
+                if try_device != device and device is not None:
+                    print(f"ℹ️  Using {device_name} (device {try_device}) - your default device was unavailable")
+                break
+                
+            except Exception as e:
+                if stream:
+                    try:
+                        stream.close()
+                    except:
+                        pass
+                    stream = None
+                
+                if debug or try_device == devices_to_try[-1]:  # Show error on last attempt
+                    debug_log.detail(f"Failed to open device {try_device}: {e}")
+                
+                # If this was the last device, raise the error
+                if try_device == devices_to_try[-1]:
+                    raise Exception(
+                        f"Could not open any audio input device. Tried devices: {tried_devices}. "
+                        f"Last error: {e}. "
+                        "Try: 1) Close apps using your microphone (Zoom, Teams, etc.), "
+                        "2) Check System Settings → Privacy & Security → Microphone, "
+                        "3) Use 'rec -s' to select a different microphone device."
+                    )
+        
+        if not stream:
+            raise Exception("Failed to open audio stream after trying all available devices")
         
         # Monitor recording with live feedback
         start_time = time.time()
