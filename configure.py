@@ -157,6 +157,7 @@ def main():
         f.write(f"COMMAND_NAME='{rec_command}'\n")
         f.write(f"AUTO_COPY={'true' if auto_copy == 'y' else 'false'}\n")
         f.write(f"AUTO_OPEN={'true' if auto_open == 'y' else 'false'}\n")
+        f.write(f"OPEN_IN_OBSIDIAN=true\n")  # Default true - try Obsidian first, fall back to TextEdit
         f.write(f"AUTO_CLEANUP_AUDIO=true\n")  # Default true for clean workspace
         f.write(f"SILENCE_DURATION_SECONDS={silence_duration}\n")
         f.write(f"DEFAULT_MIC_DEVICE={mic_device}\n")

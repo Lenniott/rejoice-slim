@@ -68,7 +68,8 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "auto")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:270m")
 OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))  # Character limit for AI processing
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
-AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true" 
+AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
+OPEN_IN_OBSIDIAN = os.getenv("OPEN_IN_OBSIDIAN", "true").lower() == "true"  # Default true - try Obsidian first
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
 AUTO_CLEANUP_AUDIO = os.getenv("AUTO_CLEANUP_AUDIO", "true").lower() == "true"  # Default true for clean workspace
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
@@ -910,15 +911,58 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
 
 def handle_post_transcription_actions(transcribed_text, full_path, ollama_available, args):
     """Handle file opening based on settings"""
-    
+
     # Determine actions based on args or auto settings
     should_open = args.open if hasattr(args, 'open') and args.open is not None else AUTO_OPEN
-    
+
+    def open_file(file_path):
+        """Open file with Obsidian if enabled, otherwise use default app"""
+        # Try to open in Obsidian first (for .md files and if setting enabled)
+        if file_path.endswith('.md') and OPEN_IN_OBSIDIAN:
+            # Obsidian URI format: obsidian://open?path=/absolute/path/to/file.md
+            import urllib.parse
+            abs_path = os.path.abspath(file_path)
+            obsidian_uri = f"obsidian://open?path={urllib.parse.quote(abs_path)}"
+
+            try:
+                if sys.platform == "darwin":
+                    result = subprocess.run(["open", obsidian_uri],
+                                          capture_output=True,
+                                          timeout=2)
+                    if result.returncode == 0:
+                        print("📂 File opened in Obsidian.")
+                        return
+                else:
+                    result = subprocess.run(["xdg-open", obsidian_uri],
+                                          capture_output=True,
+                                          timeout=2)
+                    if result.returncode == 0:
+                        print("📂 File opened in Obsidian.")
+                        return
+            except:
+                # Obsidian not available or failed, fall back to default app
+                pass
+
+        # Fall back to default app (TextEdit on macOS for .md files)
+        if sys.platform == "darwin":
+            # For macOS, explicitly use TextEdit for markdown files when not using Obsidian
+            if file_path.endswith('.md'):
+                try:
+                    subprocess.run(["open", "-a", "TextEdit", file_path])
+                    print("📂 File opened in TextEdit.")
+                    return
+                except:
+                    pass
+            # Generic open for other file types
+            subprocess.run(["open", file_path])
+            print("📂 File opened.")
+        else:
+            subprocess.run(["xdg-open", file_path])
+            print("📂 File opened.")
+
     # Open file - only if explicitly enabled
     if should_open:
-        opener = "open" if sys.platform == "darwin" else "xdg-open"
-        subprocess.run([opener, full_path])
-        print("📂 File opened.")
+        open_file(full_path)
     elif not hasattr(args, 'open') or args.open is None:
         # Only ask if AUTO_OPEN is not explicitly set to false
         if not AUTO_OPEN:
@@ -927,8 +971,7 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
         else:
             # Ask user
             if input("📂 Open the file? (y/n): ").lower() == 'y':
-                opener = "open" if sys.platform == "darwin" else "xdg-open"
-                subprocess.run([opener, full_path])
+                open_file(full_path)
                 
 def main(args=None):
     try:
@@ -1015,23 +1058,50 @@ def main(args=None):
         file_manager.update_transcript_status(file_path, "processed")
     except Exception as e:
         print(f"⚠️ Could not update transcript status: {e}")
-    
-    # Clean up audio files if enabled (both session and stored files)
-    if AUTO_CLEANUP_AUDIO:
-        # Calculate recording duration from audio file if it exists
-        recording_duration = 0
-        if master_audio_file and master_audio_file.exists():
-            try:
-                with wave.open(str(master_audio_file), 'rb') as wav:
-                    frames = wav.getnframes()
-                    rate = wav.getframerate()
-                    recording_duration = frames / float(rate) if rate > 0 else 0
-            except Exception:
-                # If we can't read the file, use a safe default that won't trigger cleanup
-                recording_duration = 0
 
-        # Validate before deleting to prevent data loss
-        if safe_cleanup_audio(master_audio_file, transcribed_text, recording_duration, SAMPLE_RATE):
+    # 5. Add AI-generated summary, tags, and proper filename (if enabled)
+    final_file_path = file_path  # Track the final path (may change if renamed)
+    if AUTO_METADATA and transcribed_text and transcribed_text.strip():
+        print("🤖 Generating summary and tags...")
+        summarizer = get_summarizer()
+        if summarizer.check_ollama_available():
+            success, new_path = summarizer.summarize_file(file_path, copy_to_notes=False)
+            if success:
+                print("✅ Summary and tags added to transcript metadata")
+                # Update final path if file was renamed
+                if new_path:
+                    final_file_path = new_path
+            else:
+                print("⚠️ Could not generate AI summary - transcript saved without metadata")
+        else:
+            print("ℹ️  Ollama not available - transcript saved without AI metadata")
+
+    # 6. Handle post-transcription actions (file opening)
+    summarizer_for_check = get_summarizer()
+    handle_post_transcription_actions(transcribed_text, final_file_path, summarizer_for_check.check_ollama_available(), args)
+
+    # 7. Prompt user about audio cleanup at the very end
+    # Calculate recording duration from audio file if it exists
+    recording_duration = 0
+    if master_audio_file and master_audio_file.exists():
+        try:
+            with wave.open(str(master_audio_file), 'rb') as wav:
+                frames = wav.getnframes()
+                rate = wav.getframerate()
+                recording_duration = frames / float(rate) if rate > 0 else 0
+        except Exception:
+            # If we can't read the file, use a safe default that won't trigger cleanup
+            recording_duration = 0
+
+    # Validate transcription quality before offering cleanup
+    cleanup_safe = safe_cleanup_audio(master_audio_file, transcribed_text, recording_duration, SAMPLE_RATE)
+
+    if cleanup_safe:
+        # Ask user if they want to remove audio files (default: yes)
+        user_input = input("\n🗑️  Remove audio files? (Y/n): ").strip().lower()
+        should_cleanup = user_input in ['', 'y', 'yes']
+
+        if should_cleanup:
             files_cleaned = 0
 
             # Clean up session audio file (in audio_sessions/)
@@ -1052,33 +1122,20 @@ def main(args=None):
                     print(f"⚠️ Could not remove stored audio file: {e}")
 
             if files_cleaned > 0:
-                print(f"🗑️  Audio file{'s' if files_cleaned > 1 else ''} cleaned up")
+                print(f"✅ Audio file{'s' if files_cleaned > 1 else ''} removed")
         else:
-            # Validation failed - preserve audio files
-            print(f"\n💾 Audio files preserved for safety:")
+            print(f"💾 Audio files preserved:")
             if master_audio_file and master_audio_file.exists():
                 print(f"   Session: {master_audio_file}")
             if stored_audio_path and os.path.exists(stored_audio_path):
                 print(f"   Stored: {stored_audio_path}")
-
-    # 5. Add AI-generated summary, tags, and proper filename (if enabled)
-    if AUTO_METADATA and transcribed_text and transcribed_text.strip():
-        print("🤖 Generating summary and tags...")
-        summarizer = get_summarizer()
-        if summarizer.check_ollama_available():
-            success = summarizer.summarize_file(file_path, copy_to_notes=False)
-            if success:
-                print("✅ Summary and tags added to transcript metadata")
-                
-
-            else:
-                print("⚠️ Could not generate AI summary - transcript saved without metadata")
-        else:
-            print("ℹ️  Ollama not available - transcript saved without AI metadata")
-
-    # 6. Handle post-transcription actions
-    summarizer_for_check = get_summarizer()
-    handle_post_transcription_actions(transcribed_text, file_path, summarizer_for_check.check_ollama_available(), args)
+    else:
+        # Validation failed - preserve audio files automatically
+        print(f"\n💾 Audio files preserved for safety:")
+        if master_audio_file and master_audio_file.exists():
+            print(f"   Session: {master_audio_file}")
+        if stored_audio_path and os.path.exists(stored_audio_path):
+            print(f"   Stored: {stored_audio_path}")
 
 if __name__ == "__main__":
     # Parse command line arguments

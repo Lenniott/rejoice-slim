@@ -452,20 +452,20 @@ JSON:"""
         
         return None
     
-    def summarize_file(self, file_path: str, copy_to_notes: bool = True) -> bool:
+    def summarize_file(self, file_path: str, copy_to_notes: bool = True) -> tuple:
         """
         Summarize and tag a file, updating its frontmatter.
-        
+
         Args:
             file_path: Path to the file to summarize
             copy_to_notes: Whether to copy processed file to notes folder
-            
+
         Returns:
-            bool: True if successful, False otherwise
+            tuple: (success: bool, new_path: str or None) - Returns success status and new path if file was renamed
         """
         if not os.path.exists(file_path):
             print(f"❌ File not found: {file_path}")
-            return False
+            return (False, None)
         
         try:
             # Read file content
@@ -524,12 +524,13 @@ JSON:"""
             # Write updated content
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(updated_content)
-            
-            return True
-            
+
+            # Return success and the new path (which may be different if file was renamed)
+            return (True, output_path if output_path != file_path else None)
+
         except Exception as e:
             print(f"❌ Error processing file: {e}")
-            return False
+            return (False, None)
     
     def _parse_file_content(self, content: str) -> Tuple[bool, Optional[Dict], str]:
         """

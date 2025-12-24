@@ -118,7 +118,7 @@ class WhisperEngine:
             audio,
             language=language,
             beam_size=beam_size,
-            vad_filter=False,  # We handle silence detection ourselves
+            vad_filter=True,  # Enable VAD to filter silence within segments
             **kwargs
         )
 

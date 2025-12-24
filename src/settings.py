@@ -172,6 +172,7 @@ def output_settings():
     SAVE_PATH = os.getenv("SAVE_PATH")
     AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
     AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
+    OPEN_IN_OBSIDIAN = os.getenv("OPEN_IN_OBSIDIAN", "true").lower() == "true"
     AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
     AUTO_CLEANUP_AUDIO = os.getenv("AUTO_CLEANUP_AUDIO", "true").lower() == "true"
     
@@ -182,17 +183,19 @@ def output_settings():
         print(f"Current Save Path: {SAVE_PATH}")
         print(f"Auto Copy: {'Yes' if AUTO_COPY else 'No'}")
         print(f"Auto Open: {'Yes' if AUTO_OPEN else 'No'}")
+        print(f"Open in Obsidian: {'Yes' if OPEN_IN_OBSIDIAN else 'No'}")
         print(f"Auto Metadata: {'Yes' if AUTO_METADATA else 'No'}")
         print(f"Auto Cleanup Audio: {'Yes' if AUTO_CLEANUP_AUDIO else 'No'}")
         print(f"\n1. Change Output Format")
         print(f"2. Change Save Path")
         print(f"3. Toggle Auto Copy")
         print(f"4. Toggle Auto Open")
-        print(f"5. Toggle Auto Metadata")
-        print(f"6. Toggle Auto Cleanup Audio")
-        print(f"7. ← Back to Main Menu")
-        
-        choice = input("\n👉 Choose option (1-7): ").strip()
+        print(f"5. Toggle Open in Obsidian")
+        print(f"6. Toggle Auto Metadata")
+        print(f"7. Toggle Auto Cleanup Audio")
+        print(f"8. ← Back to Main Menu")
+
+        choice = input("\n👉 Choose option (1-8): ").strip()
         
         if choice == "1":
             format_choice = input("Choose output format (md/txt): ").strip().lower()
@@ -228,14 +231,24 @@ def output_settings():
                 print("⚠️ Restart the script to use the new setting")
         
         elif choice == "5":
+            new_setting = input("Open files in Obsidian? (y/n): ").lower()
+            if new_setting in ['y', 'n']:
+                update_env_setting("OPEN_IN_OBSIDIAN", 'true' if new_setting == 'y' else 'false')
+                OPEN_IN_OBSIDIAN = (new_setting == 'y')
+                print(f"✅ Open in Obsidian changed to: {'Yes' if new_setting == 'y' else 'No'}")
+                print("💡 When enabled, .md files open in Obsidian (falls back to default app if unavailable)")
+                print("💡 When disabled, files open in default app (e.g., TextEdit)")
+                print("⚠️ Restart the script to use the new setting")
+
+        elif choice == "6":
             new_setting = input("Auto generate AI metadata? (y/n): ").lower()
             if new_setting in ['y', 'n']:
                 update_env_setting("AUTO_METADATA", 'true' if new_setting == 'y' else 'false')
                 AUTO_METADATA = (new_setting == 'y')
                 print(f"✅ Auto metadata changed to: {'Yes' if new_setting == 'y' else 'No'}")
                 print("⚠️ Restart the script to use the new setting")
-        
-        elif choice == "6":
+
+        elif choice == "7":
             new_setting = input("Auto cleanup audio files after transcription? (y/n): ").lower()
             if new_setting in ['y', 'n']:
                 update_env_setting("AUTO_CLEANUP_AUDIO", 'true' if new_setting == 'y' else 'false')
@@ -244,11 +257,11 @@ def output_settings():
                 print("💡 When enabled, audio files are deleted after full transcription")
                 print("💡 When disabled, audio files are kept for reprocessing")
                 print("⚠️ Restart the script to use the new setting")
-        
-        elif choice == "7":
+
+        elif choice == "8":
             break
         else:
-            print("❌ Invalid choice. Please select 1-7.")
+            print("❌ Invalid choice. Please select 1-8.")
 
 def ai_settings():
     """AI settings submenu"""
