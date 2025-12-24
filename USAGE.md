@@ -374,10 +374,10 @@ For large transcripts (3000+ characters), the AI uses advanced hierarchical proc
 ```
 
 ### Configuration
-- **Model Selection**: Change AI model in settings (`rec -s` → AI settings)
-- **Content Limits**: Adjust max content length for processing
-- **Timeout Settings**: Configure how long to wait for AI responses
-- **Auto-metadata**: Toggle automatic AI analysis for new recordings
+- **Model Selection**: Change AI model (`rec -s` → Core → Change Ollama Model)
+- **Content Limits**: Adjust max content length (`rec -s` → Advanced → Max AI Content Length)
+- **Timeout Settings**: Configure AI timeout (`rec -s` → Advanced → Change Ollama Timeout)
+- **Auto-metadata**: Toggle automatic AI analysis (`rec -s` → Casual → Toggle Auto Metadata)
 
 ## 🔧 Troubleshooting
 
@@ -387,7 +387,7 @@ For large transcripts (3000+ characters), the AI uses advanced hierarchical proc
 - Test microphone in other apps first
 
 ### "Transcription is slow"
-- Use a smaller Whisper model: `rec -s` → choose 'tiny' or 'base'
+- Use a smaller Whisper model: `rec -s` → Core → Change Whisper Model (choose 'tiny' or 'base')
 - Check available RAM (larger models need more memory)
 - Close other resource-intensive applications
 
@@ -398,10 +398,10 @@ For large transcripts (3000+ characters), the AI uses advanced hierarchical proc
 - Check AI settings: `rec -s` → AI settings
 
 ### "AI analysis fails on large files"
-- Content automatically truncated for very large files (15k+ chars)
-- Uses hierarchical processing to handle large content efficiently  
+- Content automatically truncated at 32,000 chars (configurable in settings)
 - Check Ollama model has enough memory for processing
 - Try a smaller, faster model like `gemma3:4b`
+- Adjust max content length: `rec -s` → Advanced → Change Max AI Content Length
 
 ## 📋 Quick Reference Card
 

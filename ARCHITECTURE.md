@@ -165,19 +165,27 @@ AUTO_COPY=false
 AUTO_OPEN=false
 AUTO_METADATA=true
 
-# Streaming Settings
+# Core Settings
+SAVE_PATH='/Users/you/Documents/transcripts'
+OUTPUT_FORMAT='md'
+WHISPER_MODEL='small'
+WHISPER_LANGUAGE='en'
+OLLAMA_MODEL='gemma3:4b'
+DEFAULT_MIC_DEVICE=-1
+
+# Casual Settings (Quality of Life)
+COMMAND_NAME='rec'
+
+# Advanced Settings - Streaming
 STREAMING_BUFFER_SIZE_SECONDS=300
 STREAMING_MIN_SEGMENT_DURATION=30
 STREAMING_TARGET_SEGMENT_DURATION=60
 STREAMING_MAX_SEGMENT_DURATION=90
 
-# Audio
-DEFAULT_MIC_DEVICE=-1
-SILENCE_DURATION_SECONDS=120
-SAMPLE_RATE=16000
-
-# Command
-COMMAND_NAME=rec
+# Advanced Settings - Ollama
+OLLAMA_API_URL='http://localhost:11434/api/generate'
+OLLAMA_TIMEOUT=180
+OLLAMA_MAX_CONTENT_LENGTH=32000
 ```
 
 ## Error Handling & Recovery

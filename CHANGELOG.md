@@ -1,5 +1,36 @@
 # Changelog
 
+## Version 2.3.0 - Settings Reorganization (2024-12-24)
+
+### ⚙️ Settings System Overhaul
+
+**Reorganized Settings into 3 Intuitive Categories:**
+- **🎯 Core** (6 settings): Save path, output format, Whisper model, language, Ollama model, microphone
+- **🎨 Casual** (5 settings): Auto metadata, command name, auto copy, auto open, open in Obsidian
+- **⚙️ Advanced** (5 settings): Streaming buffer/segments, Ollama API/timeout/max content
+
+**Removed Obsolete Settings:**
+- `AUTO_CLEANUP_AUDIO` - Was loaded but never actually used in code
+- `SILENCE_DURATION_SECONDS` - Deprecated and unused
+- `STREAMING_VERBOSE` - Redundant with `--debug` flag
+
+**User Experience Improvements:**
+- Reduced menu from 9 options to 6 (3 categories + uninstall/overview/exit)
+- Added comprehensive configuration overview display
+- Improved setting descriptions with clear explanations
+- Consolidated related settings into logical groupings
+- Added navigation guide showing how to access each category
+
+**Documentation Updates:**
+- Updated `SETTINGS.md` with new 3-category structure
+- Added explanations for streaming buffer and segment settings
+- Updated `configure.py` with new summary display
+- Updated all documentation to reflect new organization
+
+**Total Settings:** 16 active settings (down from 21)
+
+---
+
 ## Version 2.2.0 - Modular Architecture Refactor (2025-11-12)
 
 ### 🏗️ Major Code Cleanup and Modularization

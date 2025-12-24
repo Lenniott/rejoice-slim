@@ -1,18 +1,17 @@
 # Rejoice - Local Voice Transcriber 🎙️
 
-**Turn your voice into searchable notes - completely offline and private.**
+**Free long-form transcription that runs offline - no limits, no data loss.**
 
 Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for **Obsidian users** who want to capture thoughts, meetings, and ideas as voice notes that automatically become searchable Markdown files in their vault.
 
 ## ✨ What It Does
 
 - 🎤 **One-command recording** - Start transcribing with `rec`
-- 🆔 **Smart ID system** - Easy-to-reference transcripts with descriptive names
-- ➕ **Append to transcripts** - Add to existing recordings with `rec -{id}`
-- 🤖 **AI-powered analysis** - Hierarchical summarization extracts key themes, questions, and actions
+- 🆔 **Smart ID system** - Easy-to-reference transcripts with 6-digit IDs
+- ➕ **Append to transcripts** - Add to existing recordings with `rec -000001`
+- 🤖 **AI-powered analysis** - Generate filenames, summaries, and tags
 - 📝 **Obsidian-ready** - Markdown format with YAML frontmatter
-- 🔄 **Real-time transcription** - See your words appear as you speak
-- 🎯 **Smart auto-stop** - Automatically stops when no speech detected
+- 🎙️ **Streaming transcription** - Processes audio continuously while recording
 - ⚡ **Short commands** - Use `-l`, `-v`, `-g`, `-s` for quick access
 - 🏠 **100% local** - Your voice data never leaves your computer
 
@@ -37,15 +36,17 @@ Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for
 curl -fsSL https://raw.githubusercontent.com/benjamayden/rejoice-slim/main/setup.sh | bash
 ```
 
-### Basic Usage  
+### Basic Usage
 ```bash
-rec                              # Start recording (creates smart_filename_22102025_000001.md, etc.)
+rec                              # Start recording (streaming, real-time transcription)
 rec -000001                      # Append to existing transcript by ID
-rec -l                           # Show all transcripts with their IDs
-rec -v 000001                    # View content of transcript by ID (id is the last number on the filename)
-rec -g 000001                    # AI analysis: extract themes, questions, actions
-rec -o                           # Open transcripts folder
-rec -s                           # Configure settings
+rec -l, --list                   # Show all transcripts with their IDs
+rec -v 000001, --view 000001     # View content of transcript by ID
+rec -g 000001, --genai 000001    # AI analysis: extract themes, questions, actions
+rec -o, --open-folder            # Open transcripts folder
+rec -s, --settings               # Configure settings
+rec --audio 000001               # Show audio files for transcript ID
+rec --reprocess 000001           # Reprocess transcript from audio
 ```
 
 ### AI-Powered Features

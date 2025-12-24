@@ -6,35 +6,35 @@
 
 Access settings anytime with:
 ```bash
+rec --settings
+# or
 rec -s
 ```
 
-This opens an interactive menu to configure all aspects of Rejoice.
+This opens an interactive menu organized into 3 intuitive categories:
+- **🎯 Core** - Commonly adjusted settings (path, format, models, mic)
+- **🎨 Casual** - Quality of life features (auto-actions, command name)
+- **⚙️ Advanced** - Technical settings (streaming, Ollama config)
 
-## 📋 Basic Settings
+## 🎯 Core Settings (Commonly Adjusted)
 
-### 🎤 Recording Command
-- **What it is:** The command you type to start recording
-- **Default:** `rec`
-- **Examples:** `record`, `transcribe`, `voice`, `tr`
-- **Why change it:** Avoid conflicts with other commands
-- **How to change:** `rec -s` → Command → Change Command Name
+These are the settings you'll adjust most often. Access them via: `rec -s` → Option 1
 
 ### 📁 Save Path
 - **What it is:** Where your transcript files are saved
 - **Default:** `~/Documents/transcripts`
 - **Pro tip:** Set to your Obsidian vault for seamless integration
 - **Examples:** `~/MyVault/Voice Notes`, `~/Desktop/Transcripts`
+- **How to change:** Settings → Core → Change Save Path
 
 ### 📝 Output Format
 - **Options:** `md` (Markdown) or `txt` (plain text)
 - **Default:** `md` - **Recommended for Obsidian users**
 - **Markdown benefits:** YAML frontmatter, tags, better organization
 - **Plain text:** Simple format, works everywhere
+- **How to change:** Settings → Core → Change Output Format
 
-## 🤖 AI Models
-
-### Whisper Model Selection
+### 🎙️ Whisper Model
 Control transcription accuracy and speed:
 
 | Model  | Size | Speed    | Accuracy | Best For |
@@ -45,9 +45,19 @@ Control transcription accuracy and speed:
 | `medium`| 769MB| Slower  | Excellent| Professional use |
 | `large`| 1550MB| Slowest | Best     | Critical accuracy needs |
 
-**Recommendation:** Start with `small`, upgrade to `medium` if you need better accuracy.
+- **Default:** `small`
+- **Recommendation:** Start with `small`, upgrade to `medium` if you need better accuracy
+- **How to change:** Settings → Core → Change Whisper Model
 
-### Ollama Model Selection (Optional)
+### 🌍 Language
+- **Default:** `auto` (automatic detection)
+- **Manual options:** `en` (English), `es` (Spanish), `fr` (French), `de` (German), etc.
+- **When to use manual:** Consistent accuracy for single-language environments
+- **When to use auto:** Multi-language conversations or unsure
+- **Supported:** 99+ languages
+- **How to change:** Settings → Core → Change Language
+
+### 🤖 Ollama Model
 Controls AI-generated filenames and metadata:
 
 | Model      | Size | Speed | Quality | Best For |
@@ -57,123 +67,128 @@ Controls AI-generated filenames and metadata:
 | `qwen3:0.6b`| 350MB| Fastest| Good   | Limited RAM/storage |
 | `phi3`     | 2.3GB| Fast  | Very Good| Alternative option |
 
-**Without Ollama:** Files get timestamp names like `transcript_2024-10-20_14-30.md`
+- **Default:** `gemma3:4b`
+- **Without Ollama:** Files get timestamp names like `transcript_2024-10-20_14-30.md`
+- **How to change:** Settings → Core → Change Ollama Model
 
-## 🌍 Language Settings
+### 🎤 Microphone Device
+- **Default:** System Default (-1)
+- **What it does:** Selects which audio input device to use
+- **List devices:** Shows all available input devices with their numbers
+- **How to change:** Settings → Core → Change Microphone Device
 
-### Language Detection
-- **Default:** `auto` (automatic detection)
-- **Manual options:** `en` (English), `es` (Spanish), `fr` (French), `de` (German), etc.
-- **When to use manual:** Consistent accuracy for single-language environments
-- **When to use auto:** Multi-language conversations or unsure
+## 🎨 Casual Settings (Quality of Life)
 
-### Supported Languages
-Whisper supports 99+ languages including:
-- **Common:** English, Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean
-- **Full list:** Available in the configuration menu
+These settings control convenience features. Access them via: `rec -s` → Option 2
 
-## 🎯 Auto Actions
+### 🤖 Auto Metadata
+- **Default:** Enabled (if Ollama installed)
+- **What it does:** AI generates intelligent filename, summary, and tags automatically
+- **Disable if:** Want manual control over metadata
+- **Requirements:** Ollama must be installed and running
+- **How to change:** Settings → Casual → Toggle Auto Metadata
 
-### Auto Copy to Clipboard
+### 🎤 Command Name
+- **What it is:** The command you type to start recording
+- **Default:** `rec`
+- **Examples:** `record`, `transcribe`, `voice`, `tr`, `notes`
+- **Why change it:** Avoid conflicts with other commands or personal preference
+- **Safety features:** Won't overwrite existing commands, creates backup
+- **How to change:** Settings → Casual → Change Command Name
+
+### 📋 Auto Copy
 - **Default:** Enabled
-- **What it does:** Copies transcript text after saving
+- **What it does:** Copies transcript text to clipboard after saving
 - **Useful for:** Quickly pasting into other apps
 - **Disable if:** Working with sensitive content
+- **How to change:** Settings → Casual → Toggle Auto Copy
 
-### Auto Open File
-- **Default:** Disabled  
+### 📂 Auto Open
+- **Default:** Disabled
 - **What it does:** Opens saved file in default editor after transcription
 - **Useful for:** Immediate review and editing
 - **Enable if:** You always edit transcripts after recording
+- **How to change:** Settings → Casual → Toggle Auto Open
 
-### Auto Metadata Generation
-- **Default:** Enabled (if Ollama installed)
-- **What it does:** AI generates filename, summary, and tags
-- **Disable if:** Want manual control over metadata
-- **Requirements:** Ollama must be installed and running
+### 📝 Open in Obsidian
+- **Default:** Enabled
+- **What it does:** Tries to open .md files in Obsidian first (falls back to default app)
+- **When disabled:** Opens files in default app (e.g., TextEdit)
+- **Useful for:** Obsidian vault workflows
+- **How to change:** Settings → Casual → Toggle Open in Obsidian
 
-## 🧠 AI Analysis Settings
+## ⚙️ Advanced Settings (Technical)
 
-### Content Length Limits
-- **Setting:** `OLLAMA_MAX_CONTENT_LENGTH`
-- **Default:** 15,000 characters
-- **What it does:** Maximum content size for AI processing
-- **Large content:** Uses hierarchical chunking for files over 3,000 chars
-- **Adjust if:** Getting timeouts or want to process larger files
+These are technical performance and AI configuration settings. Access them via: `rec -s` → Option 3
 
-### AI Analysis Features
-- **Command:** `rec -g 000042` (AI analysis of transcripts)
-- **Extracts:** Main themes, key questions, action items, narrative threads
-- **Processing:** Hierarchical summarization for large content (30k+ characters)
-- **Output:** Intelligent filename, comprehensive summary, relevant tags
+### 🎚️ Streaming Buffer Size
+- **Default:** 300 seconds (5 minutes)
+- **What it does:** How much audio to keep in memory for context (rolling buffer)
+- **Shorter (5m):** Short sessions, low memory
+- **Balanced (10m):** Recommended for most use
+- **Longer (15m):** Long sessions, high quality
+- **Range:** 60-1200 seconds (1-20 minutes)
+- **How to change:** Settings → Advanced → Configure Streaming Buffer Size
 
-### AI Timeout Settings  
+### 📊 Streaming Segments
+Control how audio is broken into chunks for transcription:
+
+- **Minimum (30s):** Don't transcribe until at least this much speech
+- **Target (60s):** Look for natural pauses around this duration
+- **Maximum (90s):** Force break at this point (prevents memory issues)
+
+**Ranges:**
+- Min: 10-60 seconds
+- Target: 30-120 seconds
+- Max: 60-180 seconds
+
+**Rule:** min ≤ target ≤ max
+
+**How to change:** Settings → Advanced → Configure Streaming Segment Durations
+
+### 🔗 Ollama API URL
+- **Default:** `http://localhost:11434/api/generate`
+- **What it does:** URL endpoint for Ollama API requests
+- **Change if:** Running Ollama on different port or remote server
+- **How to change:** Settings → Advanced → Change Ollama API URL
+
+### ⏱️ Ollama Timeout
 - **Default:** 180 seconds (3 minutes)
 - **What it does:** How long to wait for AI responses
-- **Increase if:** Large files are timing out
-- **Decrease if:** Want faster failures on problematic content
+- **Fast models (60s):** gemma3:270m, qwen3:0.6b
+- **Medium models (180s):** gemma3:4b, llama3 (recommended)
+- **Large models (300s):** llama3:70b
+- **Range:** 30-600 seconds
+- **How to change:** Settings → Advanced → Change Ollama Timeout
 
-## ⚡ Performance Settings
+### 📏 Max AI Content Length
+- **Default:** 32,000 characters
+- **What it does:** Maximum content size for AI processing (truncates if larger)
+- **Conservative (8,000):** For smaller models
+- **Balanced (32,000):** Recommended default
+- **Powerful (64,000):** For powerful setups
+- **Range:** 1,000-200,000 characters
+- **Note:** Content is truncated, not hierarchically summarized
+- **How to change:** Settings → Advanced → Change Max AI Content Length
 
-### Basic Mode Settings
-These are configured automatically for optimal performance:
+## 🎤 Audio Device Information
 
-#### Chunk Duration
-- **Default:** 10 seconds
-- **What it does:** How often you see transcription updates
-- **Shorter (5s):** More frequent updates, higher CPU usage
-- **Longer (15s):** Less frequent updates, lower CPU usage
-
-#### No Speech Detection
-- **Default:** 2 minutes
-- **What it does:** Auto-stop when no speech detected
-- **Shorter (30s):** Stops sooner during pauses
-- **Longer (5min):** Waits longer during long pauses
-
-### Detailed Mode Settings
-Full control over performance parameters:
-
-#### Advanced Chunking
-- **Chunk Duration:** 5-30 seconds
-- **Overlap:** How much chunks overlap for continuity
-- **Worker Threads:** Number of parallel transcription workers
-- **Buffer Size:** Audio buffer management
-
-#### Voice Activity Detection
-- **Sensitivity:** How sensitive to detect speech vs silence
-- **Min Speech Duration:** Minimum time to consider as speech
-- **Min Silence Duration:** Minimum silence before considering a pause
-
-#### Memory Management  
-- **Model Caching:** Keep models in memory vs reload each time
-- **Chunk Buffering:** How many chunks to process simultaneously
-- **Output Buffering:** How transcription is accumulated and displayed
-
-## 🎤 Audio Settings
-
-### Microphone Selection
-```bash
-python src/transcribe.py --list-devices
+### Listing Available Devices
+The settings menu shows available audio input devices when you select "Change Microphone Device":
 ```
-Shows available audio input devices:
-```
-Available audio devices:
-  0: Built-in Microphone (default)
-  1: USB Headset Microphone  
+Available audio input devices:
+  0: Built-in Microphone
+  1: USB Headset Microphone
   2: Blue Yeti USB Microphone
 ```
 
-Set preferred device in configuration or use:
-```bash
-python src/transcribe.py --device 2  # Use Blue Yeti
-```
-
-### Audio Quality Settings
+### Audio Quality
+These are optimized automatically:
 - **Sample Rate:** 16kHz (optimized for Whisper)
 - **Channels:** Mono (speech recognition works best with single channel)
 - **Bit Depth:** 16-bit (sufficient for voice)
 
-> **Note:** These are optimized automatically. Manual adjustment usually not needed.
+> **Note:** Manual adjustment usually not needed - the system handles this automatically.
 
 ## 📄 Output Customization
 
@@ -205,90 +220,82 @@ Project Planning Meeting - October 20th
 [Transcription content here...]
 ```
 
-### Custom Templates
-Edit `templates.json` to customize output format:
-```json
-{
-  "markdown": {
-    "header": "---\ndate: {date}\nduration: {duration}\ntags: {tags}\nsummary: {summary}\n---\n\n# {title}\n\n",
-    "content": "{transcript}"
-  },
-  "text": {
-    "header": "Date: {date}\nDuration: {duration}\nTags: {tags}\nSummary: {summary}\n\n{title}\n\n",
-    "content": "{transcript}"
-  }
-}
+## 📋 Settings Overview Display
+
+When you run `rec --settings`, you'll see a comprehensive overview organized into the 3 categories:
+
 ```
+======================================================================
+📋 CURRENT CONFIGURATION OVERVIEW
+======================================================================
 
-## 🔧 Command Settings
+🎯 CORE (Commonly Adjusted)
+   Save Path:          /Users/you/Documents/transcripts
+   Output Format:      md
+   Whisper Model:      small
+   Language:           en
+   Ollama Model:       gemma3:4b
+   Microphone:         System Default
 
-### Change Your Command Name
-You can change the command from `rec` to anything you prefer:
+🎨 CASUAL (Quality of Life)
+   Auto Metadata:      ✅ Yes
+   Command Name:       rec
+   Auto Copy:          ✅ Yes
+   Auto Open:          ✅ Yes
+   Open in Obsidian:   ✅ Yes
 
-```bash
-rec -s                    # Open settings
-# Choose: 6. Command → 1. Change Command Name
-# Enter new name: record, transcribe, voice, etc.
+⚙️ ADVANCED (Technical)
+   Buffer Size:        5m 0s (rolling audio buffer)
+   Segments:           30s-60s-90s (min-target-max chunks)
+   Ollama API:         http://localhost:11434/api/generate
+   Ollama Timeout:     3m 0s
+   Max AI Content:     32,000 chars
+
+======================================================================
+💡 HOW TO CHANGE SETTINGS
+======================================================================
+   Run: rec --settings
+
+   Then navigate to:
+   • Option 1 - 🎯 Core settings (path, format, models, mic)
+   • Option 2 - 🎨 Casual settings (auto-actions, command name)
+   • Option 3 - ⚙️  Advanced settings (streaming, Ollama config)
+======================================================================
 ```
-
-**Examples:**
-- `record` - More descriptive
-- `transcribe` - Clear purpose  
-- `voice` - Short and memorable
-- `tr` - Very short
-- `notes` - For note-taking workflow
-
-**What happens:**
-- Updates your `~/.zshrc` file automatically
-- Creates backup of old `.zshrc` 
-- Old command stops working immediately
-- New command works after `source ~/.zshrc`
-
-**Safety features:**
-- Won't overwrite existing commands
-- Creates backup before changes
-- Shows current command name
-- Validates new command name
 
 ## 🔧 Environment Variables
 
-Advanced users can set environment variables in `.env`:
+All settings are stored in `.env`. Advanced users can edit directly:
 
 ```bash
-# Whisper Settings
-WHISPER_MODEL=small
-WHISPER_LANGUAGE=auto
+# Core Settings
+SAVE_PATH='/Users/you/Documents/transcripts'
+OUTPUT_FORMAT='md'
+WHISPER_MODEL='small'
+WHISPER_LANGUAGE='en'
+OLLAMA_MODEL='gemma3:4b'
+DEFAULT_MIC_DEVICE=-1
 
-# Ollama Settings  
-OLLAMA_MODEL=gemma3:4b
-OLLAMA_TIMEOUT=30
-
-# Output Settings
-OUTPUT_FORMAT=md
-OUTPUT_PATH=~/Documents/transcripts
-
-# Auto Actions
-AUTO_COPY=true
-AUTO_OPEN=false
+# Casual Settings
 AUTO_METADATA=true
+COMMAND_NAME='rec'
+AUTO_COPY=true
+AUTO_OPEN=true
+OPEN_IN_OBSIDIAN=true
 
-# Performance
-CHUNK_DURATION=10
-NO_SPEECH_TIMEOUT=120
-WORKERS=2
+# Advanced Settings - Streaming
+STREAMING_BUFFER_SIZE_SECONDS=300
+STREAMING_MIN_SEGMENT_DURATION=30
+STREAMING_TARGET_SEGMENT_DURATION=60
+STREAMING_MAX_SEGMENT_DURATION=90
+
+# Advanced Settings - Ollama
+OLLAMA_API_URL='http://localhost:11434/api/generate'
+OLLAMA_TIMEOUT=180
+OLLAMA_MAX_CONTENT_LENGTH=32000
 ```
 
-## 🔄 Resetting Configuration
-
-### Reset to Defaults
-```bash
-python src/transcribe.py --reset-config
-```
-
-### Reconfigure Everything
-```bash
-python src/transcribe.py --config
-```
+## 🔄 Backup and Reset
 
 ### Backup Settings
 Your settings are stored in `.env`. Back it up:
@@ -296,27 +303,45 @@ Your settings are stored in `.env`. Back it up:
 cp .env .env.backup
 ```
 
+### Reconfigure from Scratch
+Re-run the setup wizard:
+```bash
+python configure.py
+```
+
+Choose either:
+- **Basic mode:** Quick setup with sensible defaults
+- **Detailed mode:** Configure all advanced settings
+
 ## 🛠️ Troubleshooting Settings
 
 ### "Settings not saving"
 - Check file permissions in the project directory
 - Ensure `.env` file is writable
-- Try running `rec -s` as your user (not sudo)
+- Try running `rec --settings` as your user (not sudo)
 
 ### "Command not found after changing alias"
-- Restart terminal: `source ~/.zshrc`
-- Or use full path: `python /path/to/rejoice/src/transcribe.py`
-- Or run uninstall: `rec -s` → Uninstall → Run Uninstall
+- Reload shell: `source ~/.zshrc`
+- Or restart your terminal
+- Backup is automatically created at `~/.zshrc.backup`
 
 ### "AI features stopped working"
-- Check Ollama: `ollama list`
+- Check Ollama is running: `ollama list`
 - Test connection: `curl http://localhost:11434/api/version`
-- Try different model: `ollama pull gemma3:4b`
+- Verify model exists: `ollama pull gemma3:4b`
 
 ### "Audio device not found"
-- List devices: `python src/transcribe.py --list-devices`
+- Go to Settings → Core → Change Microphone Device to see available devices
 - Check system audio preferences
-- Try default device: Don't specify device number
+- Try system default (-1) if specific device doesn't work
+
+### "Can't find settings menu option"
+The new menu has 3 main categories:
+- **Core (1):** Path, format, models, mic
+- **Casual (2):** Auto-actions, command name
+- **Advanced (3):** Streaming, Ollama config
+
+If you're looking for a specific setting, check the category it logically belongs to.
 
 ---
 

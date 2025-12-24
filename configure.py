@@ -98,25 +98,25 @@ def main():
     print()
 
     # 1. Get the recording command (alias)
-    rec_command = input("Enter the command you'll use to start recording [default: rec]: ") or "rec"
+    rec_command = input("\nEnter the command you'll use to start recording [default: rec]: ") or "rec"
 
     # 2. Get the directory to save transcripts
     default_path = os.path.join(os.path.expanduser("~"), "Documents", "transcripts")
-    save_path = input(f"Enter the full path to save transcripts [default: {default_path}]: ") or default_path
+    save_path = input(f"\n\nEnter the full path to save transcripts [default: {default_path}]: ") or default_path
     os.makedirs(save_path, exist_ok=True)
     print(f"✅ Transcripts will be saved in: {save_path}")
 
     # 3. Get the default output format
     output_format = ""
     while output_format not in ["md", "txt"]:
-        output_format = input("Choose the default output format (md/txt) [default: md]: ") or "md"
+        output_format = input("\n\nChoose the default output format (md/txt) [default: md]: ") or "md"
 
     # 4. Choose Whisper model
     models = ["tiny", "base", "small", "medium", "large"]
     model_choice = ""
     while model_choice not in models:
-        model_choice = input(f"Choose a Whisper model {models} [default: small]: ") or "small"
-    print("\nDownloading the Whisper model now. This might take a moment...")
+        model_choice = input(f"\n\nChoose a Whisper model {models} [default: small]: ") or "small"
+    print("Downloading the Whisper model now. This might take a moment...")
     # This part triggers the download during setup
     import sys
     sys.path.insert(0, 'src')
@@ -126,7 +126,7 @@ def main():
 
     # 5. Get Ollama model for naming (only if Ollama is installed)
     if ollama_installed:
-        ollama_model = input("Enter the Ollama model to use for file naming (e.g., gemma3:4b) [default: gemma3:4b]: ") or "gemma3:4b"
+        ollama_model = input("\n\nEnter the Ollama model to use for file naming (e.g., gemma3:4b) [default: gemma3:4b]: ") or "gemma3:4b"
 
         # Additional Ollama settings for advanced mode
         if not is_basic_mode:
