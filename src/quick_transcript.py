@@ -235,7 +235,7 @@ class QuickTranscriptAssembler:
         """
         try:
             # Import Whisper and get model settings
-            import whisper
+            import whisper_engine as whisper
             import os
             
             WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")

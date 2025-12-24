@@ -2,14 +2,16 @@
 # Each package serves a specific purpose for local, offline transcription
 
 # Speech-to-Text Engine (Local AI)
-openai-whisper>=20231117
-# - Converts audio to text completely offline
+faster-whisper>=1.1.0
+# - Converts audio to text completely offline (4x faster than openai-whisper)
 # - No API calls or cloud services
 # - Supports 99+ languages
 # - Multiple model sizes (tiny to large)
+# - Uses CTranslate2 for optimized inference
+# - Lower memory usage than original whisper
 
 # Audio Recording & Processing
-sounddevice>=0.4.6
+sounddevice>=0.5.0
 # - Professional audio recording from microphone
 # - Reliable cross-platform microphone access
 # - Concurrent recording (works while Zoom/music playing)
@@ -19,32 +21,34 @@ scipy>=1.11.0
 # - Audio file format support (WAV, MP3, etc.)
 # - Required by sounddevice for audio processing
 # - Handles sample rate conversion
+# - Note: 1.14+ requires Python 3.10+
 
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 # - Audio data processing and manipulation
 # - Required by Whisper for tensor operations
 # - Core dependency for audio math operations
+# - Note: 1.26+ requires Python 3.9+
 
 # Configuration & Utilities
-python-dotenv>=1.0.0
+python-dotenv>=1.0.1
 # - Loads settings from .env file
 # - Manages user configuration (paths, models, etc.)
 # - No network access, pure file operations
 
 # AI Features (Optional - only used if Ollama installed)
-requests>=2.25.1
+requests>=2.32.0
 # - Communicates with local Ollama server (localhost only)
 # - Generates smart filenames and summaries
 # - Zero external network requests
 
 # Clipboard Integration
-pyperclip>=1.8.2
+pyperclip>=1.9.0
 # - Auto-copy transcripts to clipboard (optional)
 # - Works offline, no network access
 # - Pure system integration
 
 # File Format Support
-PyYAML>=6.0
+PyYAML>=6.0.2
 # - Parses and generates YAML front matter
 # - Used for transcript file headers
 # - No network access, pure file operations

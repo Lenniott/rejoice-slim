@@ -133,7 +133,7 @@ def transcription_settings():
                 print(f"\n📥 Downloading Whisper model '{new_model}'...")
                 print("This may take a moment depending on the model size...")
                 try:
-                    import whisper
+                    import whisper_engine as whisper
                     whisper.load_model(new_model)
                     update_env_setting("WHISPER_MODEL", new_model)
                     WHISPER_MODEL = new_model
@@ -407,41 +407,23 @@ def advanced_performance_settings():
         print(f"\n⚡ Streaming Performance Settings")
         print("─" * 35)
         print(f"Mode: Streaming (active)")
-        print(f"No Speech Detection: {os.getenv('SILENCE_DURATION_SECONDS', '120')} seconds")
+        # SILENCE_DURATION_SECONDS removed - it's not actually used in the recording loop
         print(f"Streaming Buffer: {current_buffer}s ({current_buffer//60}m {current_buffer%60}s)")
         print(f"Streaming Segments: {current_min}s-{current_target}s-{current_max}s (min-target-max)")
         print(f"Streaming Verbose: {'Yes' if current_verbose else 'No'}")
-        print(f"\n1. Change No Speech Detection Duration")
-        print(f"2. Configure Streaming Buffer Size")
-        print(f"3. Configure Streaming Segment Durations")
-        print(f"4. Toggle Streaming Verbose Mode")
-        print(f"5. ← Back to Main Menu")
-        
-        choice = input("\n👉 Choose option (1-5): ").strip()
-        
+        print(f"\n1. Configure Streaming Buffer Size")
+        print(f"2. Configure Streaming Segment Durations")
+        print(f"3. Toggle Streaming Verbose Mode")
+        print(f"4. ← Back to Main Menu")
+
+        choice = input("\n👉 Choose option (1-4): ").strip()
+
         if choice == "1":
-            current_silence = int(os.getenv('SILENCE_DURATION_SECONDS', '120'))
-            new_silence = input(f"Enter no speech detection duration in seconds (30-300) [current: {current_silence}]: ").strip()
-            try:
-                silence = int(new_silence) if new_silence else current_silence
-                if 30 <= silence <= 300:
-                    minutes = silence // 60
-                    seconds = silence % 60
-                    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
-                    update_env_setting("SILENCE_DURATION_SECONDS", str(silence))
-                    print(f"✅ No speech detection changed to: {silence} seconds ({time_str})")
-                    print("⚠️ Restart the script to use the new setting")
-                else:
-                    print("❌ Duration must be between 30 and 300 seconds")
-            except ValueError:
-                print("❌ Please enter a valid number")
-        
-        elif choice == "2":
             print(f"\nCurrent buffer size: {current_buffer} seconds ({current_buffer//60}m {current_buffer%60}s)")
             print("Recommended buffer sizes:")
-            print("  • 180s (3m)  - Short sessions, low memory")
-            print("  • 300s (5m)  - Balanced (default)")
-            print("  • 600s (10m) - Long sessions, high quality")
+            print("  • 300s (5m)   - Short sessions, low memory")
+            print("  • 900s (15m)  - Balanced (default, recommended)")
+            print("  • 1200s (20m) - Long sessions, high quality")
             
             new_buffer = input(f"Enter buffer size in seconds (60-1200) [current: {current_buffer}]: ").strip()
             try:
@@ -458,22 +440,22 @@ def advanced_performance_settings():
             except ValueError:
                 print("❌ Please enter a valid number")
         
-        elif choice == "3":
+        elif choice == "2":
             print(f"\nCurrent segment durations: {current_min}s-{current_target}s-{current_max}s")
             print("Segment duration rules:")
             print("  • Min: Shortest allowed segment (avoid noise)")
             print("  • Target: Preferred segment length (optimal for Whisper)")
             print("  • Max: Force break point (prevent memory issues)")
-            
+
             new_min = input(f"Enter minimum duration (10-60s) [current: {current_min}]: ").strip()
             new_target = input(f"Enter target duration (30-120s) [current: {current_target}]: ").strip()
             new_max = input(f"Enter maximum duration (60-180s) [current: {current_max}]: ").strip()
-            
+
             try:
                 min_dur = int(new_min) if new_min else current_min
                 target_dur = int(new_target) if new_target else current_target
                 max_dur = int(new_max) if new_max else current_max
-                
+
                 if (10 <= min_dur <= 60 and 30 <= target_dur <= 120 and 60 <= max_dur <= 180 and
                     min_dur <= target_dur <= max_dur):
                     update_env_setting("STREAMING_MIN_SEGMENT_DURATION", str(min_dur))
@@ -485,18 +467,18 @@ def advanced_performance_settings():
                     print("❌ Invalid durations. Ensure: 10≤min≤60, 30≤target≤120, 60≤max≤180, min≤target≤max")
             except ValueError:
                 print("❌ Please enter valid numbers")
-        
-        elif choice == "4":
+
+        elif choice == "3":
             new_verbose = input("Enable streaming verbose mode? (y/n): ").lower()
             if new_verbose in ['y', 'n']:
                 update_env_setting("STREAMING_VERBOSE", 'true' if new_verbose == 'y' else 'false')
                 print(f"✅ Streaming verbose mode changed to: {'Yes' if new_verbose == 'y' else 'No'}")
                 print("⚠️ Restart the script to use the new setting")
-        
-        elif choice == "5":
+
+        elif choice == "4":
             break
         else:
-            print("❌ Invalid choice. Please select 1-5.")
+            print("❌ Invalid choice. Please select 1-4.")
 
 def command_settings():
     """Command settings submenu"""

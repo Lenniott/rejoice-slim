@@ -52,7 +52,9 @@ def main():
         model_choice = input(f"Choose a Whisper model {models} [default: small]: ") or "small"
     print("\nDownloading the Whisper model now. This might take a moment...")
     # This part triggers the download during setup
-    import whisper
+    import sys
+    sys.path.insert(0, 'src')
+    import whisper_engine as whisper
     whisper.load_model(model_choice)
     print("✅ Model downloaded successfully.")
 

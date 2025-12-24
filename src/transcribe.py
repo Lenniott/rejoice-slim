@@ -9,7 +9,6 @@ import sys
 import subprocess
 import sounddevice as sd
 import numpy as np
-import whisper
 import time
 from dotenv import load_dotenv
 import tempfile
@@ -38,6 +37,10 @@ from quick_transcript import QuickTranscriptAssembler
 from loading_indicator import LoadingIndicator
 from safety_net import SafetyNetManager
 from debug_logger import DebugLogger
+from recording_health_monitor import RecordingHealthMonitor
+
+# Import whisper engine (supports both faster-whisper and openai-whisper)
+import whisper_engine as whisper
 
 # Import settings module
 from settings import settings_menu
@@ -198,11 +201,61 @@ def _global_signal_handler(signum, frame):
         if _global_recording_state['recording_event']:
             _global_recording_state['recording_event'].clear()
 
+def safe_cleanup_audio(master_audio_file: Path, transcription_text: str,
+                       recording_duration: float, sample_rate: int = 16000) -> bool:
+    """
+    Safely validate before deleting audio files to prevent data loss.
+
+    Args:
+        master_audio_file: Path to the master audio file
+        transcription_text: The transcribed text
+        recording_duration: Duration of recording in seconds
+        sample_rate: Audio sample rate (default 16000)
+
+    Returns:
+        bool: True if safe to delete, False if files should be preserved
+    """
+    # Validation 1: Transcription content
+    if not transcription_text or len(transcription_text.strip()) < 50:
+        print("⚠️  Keeping audio - transcription appears empty")
+        return False
+
+    # Validation 2: File size check
+    if master_audio_file and master_audio_file.exists():
+        file_size = master_audio_file.stat().st_size
+        expected_size = recording_duration * sample_rate * 2  # 2 bytes per sample (16-bit)
+        if file_size < expected_size * 0.8:  # Less than 80% of expected size
+            print(f"⚠️  Keeping audio - file size suspicious ({file_size/1024/1024:.1f} MB vs {expected_size/1024/1024:.1f} MB expected)")
+            return False
+
+        # Validation 3: WAV integrity
+        try:
+            with wave.open(str(master_audio_file), 'rb') as wav:
+                frames = wav.getnframes()
+                if frames < sample_rate * 10:  # Less than 10 seconds
+                    print("⚠️  Keeping audio - WAV file too short")
+                    return False
+        except Exception as e:
+            print(f"⚠️  Keeping audio - WAV file invalid: {e}")
+            return False
+
+    # Validation 4: Transcription quality (words per minute check)
+    if recording_duration > 0:
+        words = len(transcription_text.split())
+        wpm = words / (recording_duration / 60)
+        if wpm < 10:  # Less than 10 words per minute is suspicious
+            print(f"⚠️  Keeping audio - suspicious transcription rate ({wpm:.1f} wpm)")
+            return False
+
+    print("✓ Transcription validated, safe to cleanup")
+    return True
+
+
 def record_audio_streaming(device_override: Optional[int] = None, debug: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
     """
     Records audio using the new streaming transcription system.
     Simplified version using sounddevice for compatibility.
-    
+
     Returns:
         Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]: (transcribed_text, master_audio_file_path, transcript_path, transcript_id)
     """
@@ -315,6 +368,10 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
     recording_active = threading.Event()
     recording_active.set()
     user_stopped = threading.Event()
+
+    # Initialize health monitor for recording
+    health_monitor = RecordingHealthMonitor()
+    debug_log.detail("Health monitor initialized")
     
     def initialize_audio_writer():
         nonlocal audio_writer
@@ -374,14 +431,17 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                 recording_active.clear()
     
     def audio_callback(indata, frames, time_info, status):
-        """Process incoming audio data."""
+        """Process incoming audio data with health monitoring."""
         if not recording_active.is_set():
             return
-            
+
+        bytes_written = 0
+        write_success = False
+
         try:
             # Convert to flat mono array
             audio_data = indata.flatten()
-            
+
             # Resample if needed (from native rate to Whisper's 16kHz)
             if needs_resampling:
                 # Simple linear interpolation resampling
@@ -395,15 +455,25 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                 audio_data_16k = resampled_audio
             else:
                 audio_data_16k = audio_data
-            
+
             # Write to master file immediately (at 16kHz for Whisper compatibility)
             audio_16bit = (audio_data_16k * 32767).astype(np.int16)
-            audio_writer.writeframes(audio_16bit.tobytes())
+            audio_bytes = audio_16bit.tobytes()
+
+            # Track file position before write
+            bytes_before = audio_writer._file.tell() if audio_writer else 0
+
+            audio_writer.writeframes(audio_bytes)
             audio_writer._file.flush()
-            
+
+            # Track bytes written
+            bytes_after = audio_writer._file.tell() if audio_writer else 0
+            bytes_written = bytes_after - bytes_before
+            write_success = bytes_written > 0
+
             # Add to circular buffer for streaming (already resampled to 16kHz)
             audio_buffer.write(audio_data_16k)
-            
+
             # Optional debug monitoring
             if debug and hasattr(audio_callback, 'call_count'):
                 audio_callback.call_count += 1
@@ -412,11 +482,16 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                     print(f"🎙️  Recording: {duration:.1f}s", end='\r', flush=True)
             elif debug:
                 audio_callback.call_count = 1
-                
+
         except Exception as e:
             debug_log.error(f"Audio callback error: {e}")
             if debug:
                 print(f"⚠️ Audio callback error: {e}")
+            write_success = False
+
+        finally:
+            # Always track callback health (even on failure)
+            health_monitor.track_callback(len(indata), bytes_written, write_success)
     
     try:
         # Start keyboard listener
@@ -428,12 +503,14 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             indicator.stop()
         
         debug_log.milestone("Recording initialized, starting audio capture")
-        
+
         # Platform-specific instructions
+        print("🔴 Recording started")
         if sys.platform == "darwin":  # macOS
-            print("🔴 Recording... Press Enter to stop, or Ctrl+C (^C) to cancel.")
+            print("   Press Enter to stop, or Ctrl+C (^C) to cancel")
         else:
-            print("🔴 Recording... Press Enter to stop, or Ctrl+C to cancel.")
+            print("   Press Enter to stop, or Ctrl+C to cancel")
+        print("   Status updates every 5 seconds...\n")
         
         
         
@@ -514,12 +591,55 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         # Monitor recording with live feedback
         start_time = time.time()
         last_status_time = time.time()
+        last_health_check = time.time()
         segments_processed = 0
-        
+
         while recording_active.is_set():
             current_time = time.time()
             duration = current_time - start_time
-            
+
+            # NEW: Periodic health check every 10 seconds
+            if current_time - last_health_check > 10.0:
+                health_status = health_monitor.check_health()
+
+                if health_status['is_critical']:
+                    # CRITICAL: Stop recording immediately
+                    print(f"\n❌ RECORDING FAILURE DETECTED")
+                    for issue in health_status['issues']:
+                        print(f"   • {issue}")
+                    print("⚠️  Stopping to prevent data loss...")
+                    debug_log.error(f"Critical recording failure: {health_status['issues']}")
+                    recording_active.clear()
+                    break
+                elif health_status['issues']:
+                    # WARNING: Show but continue
+                    print(f"\n⚠️  Recording warning:")
+                    for issue in health_status['issues']:
+                        print(f"   • {issue}")
+                    debug_log.warning(f"Recording warnings: {health_status['issues']}")
+
+                # Check master file growth
+                if master_audio_file.exists():
+                    current_size = master_audio_file.stat().st_size
+                    expected_size = duration * SAMPLE_RATE * 2  # 2 bytes per sample
+
+                    if current_size < expected_size * 0.5 and duration > 30:
+                        print(f"\n⚠️  Master file not growing properly")
+                        print(f"   Current: {current_size/1024/1024:.1f} MB")
+                        print(f"   Expected: {expected_size/1024/1024:.1f} MB")
+                        debug_log.warning(f"Master file growth issue: {current_size} vs {expected_size} expected")
+
+                last_health_check = current_time
+
+            # NEW: Status update every 5 seconds
+            if current_time - last_status_time > 5.0:
+                stats = health_monitor.get_stats()
+                print(f"\r🔴 Recording: {int(duration//60):02d}:{int(duration%60):02d} | "
+                      f"📊 {stats['total_mb']:.1f} MB | "
+                      f"✓ {segments_processed} segments",
+                      end='', flush=True)
+                last_status_time = current_time
+
             # Process completed segments
             try:
                 # First, analyze audio to detect new segments
@@ -569,12 +689,57 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             audio_writer = None
 
         audio_buffer.stop_recording()
-        
+
         # Get actual recording duration
         recording_duration = audio_buffer.get_recording_duration()
         debug_log.milestone(f"Recording stopped: {recording_duration:.1f}s captured")
         debug_log.detail(f"Total audio duration: {recording_duration:.1f}s")
-        
+
+        # NEW: Validate recording before proceeding
+        print("\n\n🔍 Validating recording...")
+        validation_issues = []
+
+        # Check master file exists and has expected size
+        if not master_audio_file.exists():
+            validation_issues.append("Master audio file missing!")
+        else:
+            file_size = master_audio_file.stat().st_size
+            expected_size = recording_duration * SAMPLE_RATE * 2  # 2 bytes per sample
+            size_ratio = file_size / expected_size if expected_size > 0 else 0
+
+            if size_ratio < 0.5:
+                validation_issues.append(f"Master file too small ({size_ratio*100:.1f}% of expected)")
+            elif size_ratio < 0.8:
+                validation_issues.append(f"Master file smaller than expected ({size_ratio*100:.1f}%)")
+
+            # Validate WAV integrity
+            try:
+                with wave.open(str(master_audio_file), 'rb') as wav:
+                    frames = wav.getnframes()
+                    if frames < SAMPLE_RATE * 5:
+                        validation_issues.append("WAV file too short (less than 5 seconds)")
+            except Exception as e:
+                validation_issues.append(f"WAV file corrupted: {e}")
+
+        if validation_issues:
+            print("❌ VALIDATION ISSUES DETECTED:")
+            for issue in validation_issues:
+                print(f"   • {issue}")
+            print("\n⚠️  Audio files will be PRESERVED for recovery")
+            print(f"📁 Master audio: {master_audio_file}")
+            debug_log.error(f"Validation failed: {validation_issues}")
+
+            try:
+                user_response = input("\nAttempt transcription anyway? (y/n): ").strip().lower()
+                if user_response != 'y':
+                    print("Exiting without transcription. Audio preserved for later recovery.")
+                    return None, master_audio_file, None, None
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting without transcription. Audio preserved.")
+                return None, master_audio_file, None, None
+        else:
+            print("✓ Recording validated successfully")
+
         # Start loading indicator for processing
         loader = LoadingIndicator("🎤 Processing audio...")
         loader.start()
@@ -668,7 +833,6 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             debug_log.milestone("Starting full Whisper transcription")
             
             try:
-                import whisper
                 whisper_model = whisper.load_model(WHISPER_MODEL)
                 debug_log.detail(f"Loaded Whisper model: {WHISPER_MODEL}")
                 
@@ -854,27 +1018,48 @@ def main(args=None):
     
     # Clean up audio files if enabled (both session and stored files)
     if AUTO_CLEANUP_AUDIO:
-        files_cleaned = 0
-        
-        # Clean up session audio file (in audio_sessions/)
+        # Calculate recording duration from audio file if it exists
+        recording_duration = 0
         if master_audio_file and master_audio_file.exists():
             try:
-                master_audio_file.unlink()
-                files_cleaned += 1
-            except Exception as e:
-                print(f"⚠️ Could not remove session audio file: {e}")
-        
-        # Clean up stored audio file (in audio/)
-        # Only needed for recovery if transcription fails - safe to delete after success
-        if stored_audio_path and os.path.exists(stored_audio_path):
-            try:
-                os.remove(stored_audio_path)
-                files_cleaned += 1
-            except Exception as e:
-                print(f"⚠️ Could not remove stored audio file: {e}")
-        
-        if files_cleaned > 0:
-            print(f"🗑️  Audio file{'s' if files_cleaned > 1 else ''} cleaned up")
+                with wave.open(str(master_audio_file), 'rb') as wav:
+                    frames = wav.getnframes()
+                    rate = wav.getframerate()
+                    recording_duration = frames / float(rate) if rate > 0 else 0
+            except Exception:
+                # If we can't read the file, use a safe default that won't trigger cleanup
+                recording_duration = 0
+
+        # Validate before deleting to prevent data loss
+        if safe_cleanup_audio(master_audio_file, transcribed_text, recording_duration, SAMPLE_RATE):
+            files_cleaned = 0
+
+            # Clean up session audio file (in audio_sessions/)
+            if master_audio_file and master_audio_file.exists():
+                try:
+                    master_audio_file.unlink()
+                    files_cleaned += 1
+                except Exception as e:
+                    print(f"⚠️ Could not remove session audio file: {e}")
+
+            # Clean up stored audio file (in audio/)
+            # Only needed for recovery if transcription fails - safe to delete after success
+            if stored_audio_path and os.path.exists(stored_audio_path):
+                try:
+                    os.remove(stored_audio_path)
+                    files_cleaned += 1
+                except Exception as e:
+                    print(f"⚠️ Could not remove stored audio file: {e}")
+
+            if files_cleaned > 0:
+                print(f"🗑️  Audio file{'s' if files_cleaned > 1 else ''} cleaned up")
+        else:
+            # Validation failed - preserve audio files
+            print(f"\n💾 Audio files preserved for safety:")
+            if master_audio_file and master_audio_file.exists():
+                print(f"   Session: {master_audio_file}")
+            if stored_audio_path and os.path.exists(stored_audio_path):
+                print(f"   Stored: {stored_audio_path}")
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():

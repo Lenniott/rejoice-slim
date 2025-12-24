@@ -46,8 +46,10 @@ fi
 
 # 4. Activate Virtual Environment and Install Dependencies
 source venv/bin/activate
+echo "🔄 Upgrading pip to latest version..."
+python3 -m pip install --upgrade pip --quiet
 echo "🐍 Installing Python packages from requirements.txt..."
-pip install -r requirements.txt
+pip install -r requirements.txt --quiet
 if [ $? -ne 0 ]; then
     echo "❌ Failed to install Python packages."
     exit 1

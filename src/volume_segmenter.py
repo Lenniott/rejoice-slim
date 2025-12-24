@@ -395,23 +395,39 @@ class SegmentProcessor:
         
     def extract_segment_audio(self, segment: SegmentInfo) -> Optional[np.ndarray]:
         """
-        Extract audio data for a segment.
-        
+        Extract audio data for a segment with buffer overflow detection.
+
         Args:
             segment: SegmentInfo with timing information
-            
+
         Returns:
             Audio data as numpy array, or None if not available
         """
         with self.lock:
-            # Add retry logic to handle race condition between 
+            # NEW: Check if segment is still within buffer capacity
+            recording_duration = self.audio_buffer.get_recording_duration()
+            available_duration = min(recording_duration, self.audio_buffer.capacity_seconds)
+            buffer_start_time = recording_duration - available_duration
+
+            if segment.start_time < buffer_start_time:
+                logger.error(
+                    f"BUFFER OVERFLOW: Segment {segment.start_time:.1f}s is before "
+                    f"buffer start {buffer_start_time:.1f}s - audio overwritten!"
+                )
+                print(f"\n❌ CRITICAL: Audio segment lost due to buffer overflow!")
+                print(f"   Segment {segment.start_time:.1f}-{segment.end_time:.1f}s was overwritten")
+                print(f"   Buffer capacity: {self.audio_buffer.capacity_seconds}s, recording: {recording_duration:.1f}s")
+                print(f"   Consider increasing STREAMING_BUFFER_SIZE_SECONDS in settings")
+                return None
+
+            # Add retry logic to handle race condition between
             # segment creation and audio buffer writes
             max_retries = 10  # Increased retries
             retry_delay = 0.2  # 200ms delay
-            
+
             for attempt in range(max_retries):
                 audio_data = self.audio_buffer.read_segment(
-                    segment.start_time, 
+                    segment.start_time,
                     segment.duration
                 )
                 

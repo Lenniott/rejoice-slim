@@ -327,7 +327,7 @@ def summarize_file(path_or_id, save_path, output_format, auto_copy):
 
 def transcribe_audio_file(audio_path, whisper_model_name):
     """Transcribe a single audio file using the same method as the main transcription."""
-    import whisper
+    import whisper_engine as whisper
     
     audio_file = Path(audio_path)
     if not audio_file.exists():
@@ -512,7 +512,7 @@ def list_recovery_sessions(save_path, sample_rate):
 def recover_session(session_id_or_latest, save_path, output_format, sample_rate, auto_metadata,
                     whisper_model_name, transcribe_session_file_func):
     """Recover and transcribe a specific session"""
-    import whisper
+    import whisper_engine as whisper
     
     sessions = list_recovery_sessions(save_path, sample_rate)
     

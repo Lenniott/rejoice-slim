@@ -16,8 +16,8 @@ class CircularAudioBuffer:
     for volume-based segmentation analysis while maintaining memory efficiency.
     """
     
-    def __init__(self, 
-                 capacity_seconds: int = 300,  # 5 minutes default
+    def __init__(self,
+                 capacity_seconds: int = 900,  # 15 minutes default (increased from 5 to prevent overflow)
                  sample_rate: int = 16000,
                  channels: int = 1,
                  dtype: str = 'float32'):
