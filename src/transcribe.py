@@ -75,7 +75,6 @@ AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
 OPEN_IN_OBSIDIAN = os.getenv("OPEN_IN_OBSIDIAN", "true").lower() == "true"  # Default true - try Obsidian first
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
-AUTO_CLEANUP_AUDIO = os.getenv("AUTO_CLEANUP_AUDIO", "true").lower() == "true"  # Default true for clean workspace
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
 SAMPLE_RATE = 16000 # 16kHz is standard for Whisper
@@ -85,10 +84,6 @@ STREAMING_BUFFER_SIZE_SECONDS = int(os.getenv("STREAMING_BUFFER_SIZE_SECONDS", "
 STREAMING_MIN_SEGMENT_DURATION = int(os.getenv("STREAMING_MIN_SEGMENT_DURATION", "30"))  # 30 seconds
 STREAMING_TARGET_SEGMENT_DURATION = int(os.getenv("STREAMING_TARGET_SEGMENT_DURATION", "60"))  # 60 seconds
 STREAMING_MAX_SEGMENT_DURATION = int(os.getenv("STREAMING_MAX_SEGMENT_DURATION", "90"))  # 90 seconds
-STREAMING_VERBOSE = os.getenv("STREAMING_VERBOSE", "false").lower() == "true"
-
-# Legacy configuration (for compatibility)
-SILENCE_DURATION_SECONDS = int(os.getenv("SILENCE_DURATION_SECONDS", "120"))
 
 # Audio device configuration
 DEFAULT_MIC_DEVICE = int(os.getenv("DEFAULT_MIC_DEVICE", "-1"))
@@ -861,7 +856,7 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             # Now run full-file Whisper transcription (for all recordings)
             if not debug:
                 show_transcribing(0, session_id)
-            loader.update("🔄 Running full audio transcription...")
+            debug_log.milestone("🔄 Running full audio transcription...")
             debug_log.milestone("Starting full Whisper transcription")
 
             transcription_start_time = time.time()
@@ -1041,7 +1036,7 @@ def main(args=None):
 
         # Use streaming transcription (now the default and only mode)
         # Support both --debug and --verbose (deprecated) flags
-        debug = (hasattr(args, 'debug') and args.debug) or (hasattr(args, 'verbose') and args.verbose) or STREAMING_VERBOSE
+        debug = (hasattr(args, 'debug') and args.debug) or (hasattr(args, 'verbose') and args.verbose)
 
         # Show loading screen (unless in debug mode)
         if not debug:
