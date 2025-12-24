@@ -38,6 +38,10 @@ from loading_indicator import LoadingIndicator
 from safety_net import SafetyNetManager
 from debug_logger import DebugLogger
 from recording_health_monitor import RecordingHealthMonitor
+from ui_display import (
+    clear_screen, show_loading, show_recording,
+    show_transcribing, show_processing, show_complete
+)
 
 # Import whisper engine (supports both faster-whisper and openai-whisper)
 import whisper_engine as whisper
@@ -248,7 +252,6 @@ def safe_cleanup_audio(master_audio_file: Path, transcription_text: str,
             print(f"⚠️  Keeping audio - suspicious transcription rate ({wpm:.1f} wpm)")
             return False
 
-    print("✓ Transcription validated, safe to cleanup")
     return True
 
 
@@ -370,6 +373,10 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
     recording_active.set()
     user_stopped = threading.Event()
 
+    # Thread-safe volume level tracking for UI meter
+    current_volume_rms = [0.0]  # Use list for thread-safe sharing
+    volume_lock = threading.Lock()
+
     # Initialize health monitor for recording
     health_monitor = RecordingHealthMonitor()
     debug_log.detail("Health monitor initialized")
@@ -443,6 +450,16 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
             # Convert to flat mono array
             audio_data = indata.flatten()
 
+            # Calculate RMS volume for UI meter (0.0 to 1.0 range)
+            rms = np.sqrt(np.mean(audio_data ** 2))
+            # Normalize to reasonable range (typical speech is 0.01-0.3)
+            # Increased sensitivity: 5.0x multiplier for more responsive meter
+            normalized_volume = min(rms * 5.0, 1.0)
+
+            # Update shared volume level (thread-safe)
+            with volume_lock:
+                current_volume_rms[0] = normalized_volume
+
             # Resample if needed (from native rate to Whisper's 16kHz)
             if needs_resampling:
                 # Simple linear interpolation resampling
@@ -505,13 +522,17 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
         
         debug_log.milestone("Recording initialized, starting audio capture")
 
-        # Platform-specific instructions
-        print("🔴 Recording started")
-        if sys.platform == "darwin":  # macOS
-            print("   Press Enter to stop, or Ctrl+C (^C) to cancel")
+        # Show initial recording screen (unless in debug mode)
+        if not debug:
+            show_recording(0, 0.0)
         else:
-            print("   Press Enter to stop, or Ctrl+C to cancel")
-        print("   Status updates every 5 seconds...\n")
+            # Platform-specific instructions for debug mode
+            print("🔴 Recording started")
+            if sys.platform == "darwin":  # macOS
+                print("   Press Enter to stop, or Ctrl+C (^C) to cancel")
+            else:
+                print("   Press Enter to stop, or Ctrl+C to cancel")
+            print("   Status updates every 5 seconds...\n")
         
         
         
@@ -632,13 +653,21 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
 
                 last_health_check = current_time
 
-            # NEW: Status update every 5 seconds
-            if current_time - last_status_time > 5.0:
+            # NEW: Status update every 
+            if current_time - last_status_time > 0.5:
                 stats = health_monitor.get_stats()
-                print(f"\r🔴 Recording: {int(duration//60):02d}:{int(duration%60):02d} | "
-                      f"📊 {stats['total_mb']:.1f} MB | "
-                      f"✓ {segments_processed} segments",
-                      end='', flush=True)
+                if not debug:
+                    # Clean UI: show recording screen with updated time
+                    # Get real-time volume from audio callback
+                    with volume_lock:
+                        volume_level = current_volume_rms[0]
+                    show_recording(duration, volume_level)
+                else:
+                    # Debug mode: show detailed status line
+                    print(f"\r🔴 Recording: {int(duration//60):02d}:{int(duration%60):02d} | "
+                          f"📊 {stats['total_mb']:.1f} MB | "
+                          f"✓ {segments_processed} segments",
+                          end='', flush=True)
                 last_status_time = current_time
 
             # Process completed segments
@@ -830,21 +859,52 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                 # No streaming attempt registered, so nothing to complete
             
             # Now run full-file Whisper transcription (for all recordings)
+            if not debug:
+                show_transcribing(0, session_id)
             loader.update("🔄 Running full audio transcription...")
             debug_log.milestone("Starting full Whisper transcription")
-            
+
+            transcription_start_time = time.time()
+
+            # Start progress updater for transcription (conservative estimate based on audio duration)
+            stop_transcribe_progress = threading.Event()
+            # Estimate: transcription takes ~0.3x audio duration with faster-whisper
+            estimated_transcribe_time = recording_duration * 0.3 if recording_duration > 0 else 20
+
+            def transcribe_progress_updater():
+                while not stop_transcribe_progress.is_set():
+                    if not debug:
+                        elapsed = time.time() - transcription_start_time
+                        # Conservative progress: caps at 95% until complete
+                        progress = min(int((elapsed / estimated_transcribe_time) * 95), 95)
+                        show_transcribing(elapsed, session_id, progress=progress)
+                    time.sleep(0.5)  # Update every 0.5 seconds
+
+            transcribe_thread = threading.Thread(target=transcribe_progress_updater, daemon=True)
+            transcribe_thread.start()
+
             try:
                 whisper_model = whisper.load_model(WHISPER_MODEL)
                 debug_log.detail(f"Loaded Whisper model: {WHISPER_MODEL}")
-                
+
                 if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
                     result = whisper_model.transcribe(str(master_audio_file), fp16=False, language=WHISPER_LANGUAGE)
                 else:
                     result = whisper_model.transcribe(str(master_audio_file), fp16=False)
-                
+
                 full_transcript_text = result['text'].strip()
+
+                # Stop progress updates
+                stop_transcribe_progress.set()
+                transcribe_thread.join(timeout=1)
+
+                transcription_elapsed = time.time() - transcription_start_time
                 debug_log.milestone(f"Full transcription complete: {len(full_transcript_text)} chars")
-                
+
+                # Always show 100% when complete
+                if not debug:
+                    show_transcribing(transcription_elapsed, session_id, progress=100)
+
                 if full_transcript_text:
                     # Mark full transcription as successful
                     full_attempt = safety_net.register_processing_attempt(
@@ -854,9 +914,9 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                         session_id, full_attempt, success=True,
                         output_files=[str(master_audio_file)]
                     )
-                    safety_net.complete_session(session_id, success=True, 
+                    safety_net.complete_session(session_id, success=True,
                                                final_output_files=[str(master_audio_file)])
-                    
+
                     loader.stop()
                     debug_log.milestone("Transcription complete, returning results")
                     
@@ -919,25 +979,23 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
         """Open file with Obsidian if enabled, otherwise use default app"""
         # Try to open in Obsidian first (for .md files and if setting enabled)
         if file_path.endswith('.md') and OPEN_IN_OBSIDIAN:
-            # Obsidian URI format: obsidian://open?path=/absolute/path/to/file.md
-            import urllib.parse
+            # Try opening with Obsidian app directly (better vault detection)
             abs_path = os.path.abspath(file_path)
-            obsidian_uri = f"obsidian://open?path={urllib.parse.quote(abs_path)}"
 
             try:
                 if sys.platform == "darwin":
-                    result = subprocess.run(["open", obsidian_uri],
+                    # Use -a flag to open with specific app
+                    result = subprocess.run(["open", "-a", "Obsidian", abs_path],
                                           capture_output=True,
+                                          stderr=subprocess.STDOUT,
                                           timeout=2)
                     if result.returncode == 0:
-                        print("📂 File opened in Obsidian.")
                         return
                 else:
-                    result = subprocess.run(["xdg-open", obsidian_uri],
+                    result = subprocess.run(["obsidian", abs_path],
                                           capture_output=True,
                                           timeout=2)
                     if result.returncode == 0:
-                        print("📂 File opened in Obsidian.")
                         return
             except:
                 # Obsidian not available or failed, fall back to default app
@@ -949,16 +1007,13 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
             if file_path.endswith('.md'):
                 try:
                     subprocess.run(["open", "-a", "TextEdit", file_path])
-                    print("📂 File opened in TextEdit.")
                     return
                 except:
                     pass
             # Generic open for other file types
             subprocess.run(["open", file_path])
-            print("📂 File opened.")
         else:
             subprocess.run(["xdg-open", file_path])
-            print("📂 File opened.")
 
     # Open file - only if explicitly enabled
     if should_open:
@@ -974,17 +1029,24 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
                 open_file(full_path)
                 
 def main(args=None):
+    # Track if debug mode for UI decisions
+    debug = False
+    session_id = None
+    recording_duration = 0
+
     try:
         # Set defaults if no args provided
         if args is None:
             args = type('Args', (), {})()
-        
+
         # Use streaming transcription (now the default and only mode)
         # Support both --debug and --verbose (deprecated) flags
         debug = (hasattr(args, 'debug') and args.debug) or (hasattr(args, 'verbose') and args.verbose) or STREAMING_VERBOSE
-        
-        print("🚀 Starting streaming transcription")
-        
+
+        # Show loading screen (unless in debug mode)
+        if not debug:
+            show_loading()
+
         # 1. Record Audio with streaming system
         device_override = args.device if hasattr(args, 'device') and args.device is not None else None
         transcription_result = record_audio_streaming(device_override, debug)
@@ -1015,40 +1077,46 @@ def main(args=None):
     # 3. Copy full transcript to clipboard (if not already copied by quick transcript)
     if AUTO_COPY and not existing_file_path:  # Only copy if quick didn't already
         pyperclip.copy(transcribed_text)
-        print("📋 Transcription copied to clipboard.\n\n")
+        if debug:
+            print("📋 Transcription copied to clipboard.\n\n")
 
     # 4. Save/update transcript with full transcription
     file_manager = TranscriptFileManager(SAVE_PATH, OUTPUT_FORMAT)
-    
+
     if existing_file_path and existing_transcript_id:
-        file_path = existing_file_path  
+        file_path = existing_file_path
         transcript_id = existing_transcript_id
-        print(f"💾 Updating transcript {transcript_id} with full transcription...")
-        
+        if debug:
+            print(f"💾 Updating transcript {transcript_id} with full transcription...")
+
         try:
             # Update the transcript content
             success = file_manager.update_transcript_content(file_path, transcribed_text)
-            if success:
+            if success and debug:
                 print(f"✅ Full transcription saved to {transcript_id}")
-            else:
-                print(f"⚠️ Could not update transcript, creating new one...")
+            elif not success:
+                if debug:
+                    print(f"⚠️ Could not update transcript, creating new one...")
                 existing_file_path = None
         except Exception as e:
-            print(f"⚠️ Error updating transcript: {e}, creating new one...")
+            if debug:
+                print(f"⚠️ Error updating transcript: {e}, creating new one...")
             existing_file_path = None
-    
+
     stored_audio_path = None
     if not existing_file_path:
         # Create new transcript
-        print("💾 Saving transcript...")
-        
+        if debug:
+            print("💾 Saving transcript...")
+
         try:
             file_path, transcript_id, stored_audio_path = file_manager.create_new_transcript(
-                transcribed_text, 
+                transcribed_text,
                 "transcript",  # Use default name initially
                 session_audio_file=master_audio_file
             )
-            print(f"✅ Transcript {transcript_id} saved")
+            if debug:
+                print(f"✅ Transcript {transcript_id} saved")
         except Exception as e:
             print(f"❌ Error saving transcript: {e}")
             return
@@ -1061,20 +1129,88 @@ def main(args=None):
 
     # 5. Add AI-generated summary, tags, and proper filename (if enabled)
     final_file_path = file_path  # Track the final path (may change if renamed)
+    processing_start_time = time.time()
+
     if AUTO_METADATA and transcribed_text and transcribed_text.strip():
-        print("🤖 Generating summary and tags...")
+        if not debug:
+            show_processing(0, transcript_id, os.path.basename(file_path))
+
+        if debug:
+            print("🤖 Generating summary and tags...")
+
         summarizer = get_summarizer()
         if summarizer.check_ollama_available():
+            # Estimate processing time based on audio duration (conservative: ~1.5x audio length)
+            # This ensures progress moves slowly but always completes at 100%
+            estimated_processing_time = recording_duration * 1.5 if recording_duration > 0 else 30
+
+            # Update progress during processing
+            def update_progress():
+                if not debug:
+                    elapsed = time.time() - processing_start_time
+                    # Conservative progress: caps at 95% until complete
+                    progress = min(int((elapsed / estimated_processing_time) * 95), 95)
+                    show_processing(elapsed, transcript_id, os.path.basename(file_path), progress=progress)
+
+            # Start background thread to update progress
+            import threading
+            stop_progress = threading.Event()
+            def progress_updater():
+                while not stop_progress.is_set():
+                    update_progress()
+                    time.sleep(0.5)  # Update every 0.5 seconds
+
+            progress_thread = threading.Thread(target=progress_updater, daemon=True)
+            progress_thread.start()
+
+            # Run summarization
             success, new_path = summarizer.summarize_file(file_path, copy_to_notes=False)
+
+            # Stop progress updates
+            stop_progress.set()
+            progress_thread.join(timeout=1)
+
+            processing_elapsed = time.time() - processing_start_time
+
+            # Always show 100% when complete
+            if not debug:
+                show_processing(processing_elapsed, transcript_id, os.path.basename(new_path) if new_path else os.path.basename(file_path), progress=100)
+
             if success:
-                print("✅ Summary and tags added to transcript metadata")
+                if debug:
+                    print("✅ Summary and tags added to transcript metadata")
                 # Update final path if file was renamed
                 if new_path:
                     final_file_path = new_path
             else:
-                print("⚠️ Could not generate AI summary - transcript saved without metadata")
+                if debug:
+                    print("⚠️ Could not generate AI summary - transcript saved without metadata")
         else:
-            print("ℹ️  Ollama not available - transcript saved without AI metadata")
+            if debug:
+                print("ℹ️  Ollama not available - transcript saved without AI metadata")
+
+    # Calculate recording duration for final screen
+    if master_audio_file and master_audio_file.exists():
+        try:
+            with wave.open(str(master_audio_file), 'rb') as wav:
+                frames = wav.getnframes()
+                rate = wav.getframerate()
+                recording_duration = frames / float(rate) if rate > 0 else 0
+        except Exception:
+            recording_duration = 0
+
+    # Calculate word count
+    word_count = len(transcribed_text.split())
+
+    # Show complete screen (unless in debug mode)
+    if not debug:
+        show_complete(
+            transcript_id,
+            os.path.basename(final_file_path),
+            final_file_path,
+            recording_duration,
+            word_count
+        )
 
     # 6. Handle post-transcription actions (file opening)
     summarizer_for_check = get_summarizer()

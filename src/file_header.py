@@ -140,18 +140,18 @@ class TranscriptHeader:
     def create_file_content(self, transcript_text: str, output_format: str = "md") -> str:
         """
         Create complete file content with header and transcript.
-        
+
         Args:
             transcript_text: Transcribed text content
             output_format: Output format ("md" or "txt")
-            
+
         Returns:
             str: Complete file content
         """
         header = self.generate_header_yaml()
-        
+
         if output_format == "md":
-            return f"{header}## 🎙️ Transcription\n\n{transcript_text}\n"
+            return f"{header}## 🎙️ Transcription\n\n```\n{transcript_text}\n```\n"
         else:  # txt format
             return f"{header}Transcription:\n{transcript_text}\n"
     

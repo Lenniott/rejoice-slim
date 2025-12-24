@@ -114,11 +114,12 @@ class WhisperEngine:
 
         # Transcribe with faster-whisper
         # Returns (segments, info) tuple
+        # VAD enabled to filter silence - essential for long recordings
         segments, info = self._model.transcribe(
             audio,
             language=language,
             beam_size=beam_size,
-            vad_filter=True,  # Enable VAD to filter silence within segments
+            vad_filter=True,  # Filter silence to improve accuracy and performance
             **kwargs
         )
 
