@@ -86,10 +86,17 @@ def display_settings_overview():
     print(f"   Command Name:       {command}")
     auto_copy = config.get('AUTO_COPY', 'false') == 'true'
     auto_open = config.get('AUTO_OPEN', 'false') == 'true'
-    open_obsidian = config.get('OPEN_IN_OBSIDIAN', 'false') == 'true'
     print(f"   Auto Copy:          {'✅ Yes' if auto_copy else '❌ No'}")
     print(f"   Auto Open:          {'✅ Yes' if auto_open else '❌ No'}")
-    print(f"   Open in Obsidian:   {'✅ Yes' if open_obsidian else '❌ No'}")
+
+    # Obsidian Integration
+    obsidian_enabled = config.get('OBSIDIAN_ENABLED', 'false') == 'true'
+    obsidian_vault = config.get('OBSIDIAN_VAULT_PATH', '')
+    if obsidian_enabled and obsidian_vault:
+        vault_name = os.path.basename(obsidian_vault)
+        print(f"   Obsidian Vault:     ✅ {vault_name}")
+    else:
+        print(f"   Obsidian Vault:     ❌ Not configured")
 
     # ⚙️ ADVANCED - Technical Settings
     print("\n⚙️ ADVANCED (Technical)")
@@ -294,7 +301,15 @@ def casual_settings():
         COMMAND_NAME = os.getenv("COMMAND_NAME", "rec")
         AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
         AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
-        OPEN_IN_OBSIDIAN = os.getenv("OPEN_IN_OBSIDIAN", "true").lower() == "true"
+        OBSIDIAN_ENABLED = os.getenv("OBSIDIAN_ENABLED", "false").lower() == "true"
+        OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", "")
+
+        # Display Obsidian vault status
+        if OBSIDIAN_ENABLED and OBSIDIAN_VAULT_PATH:
+            vault_name = os.path.basename(OBSIDIAN_VAULT_PATH)
+            obsidian_status = f"✅ {vault_name}"
+        else:
+            obsidian_status = "❌ Not configured"
 
         print(f"\n🎨 Casual Settings (Quality of Life)")
         print("─" * 38)
@@ -302,12 +317,12 @@ def casual_settings():
         print(f"Command Name:       {COMMAND_NAME}")
         print(f"Auto Copy:          {'Yes' if AUTO_COPY else 'No'}")
         print(f"Auto Open:          {'Yes' if AUTO_OPEN else 'No'}")
-        print(f"Open in Obsidian:   {'Yes' if OPEN_IN_OBSIDIAN else 'No'}")
+        print(f"Obsidian Vault:     {obsidian_status}")
         print(f"\n1. Toggle Auto Metadata")
         print(f"2. Change Command Name")
         print(f"3. Toggle Auto Copy")
         print(f"4. Toggle Auto Open")
-        print(f"5. Toggle Open in Obsidian")
+        print(f"5. Configure Obsidian Integration")
         print(f"6. ← Back to Main Menu")
 
         choice = input("\n👉 Choose option (1-6): ").strip()
@@ -396,13 +411,27 @@ def casual_settings():
                 print("⚠️ Restart the script to use the new setting")
 
         elif choice == "5":
-            new_setting = input("Open files in Obsidian? (y/n): ").lower()
-            if new_setting in ['y', 'n']:
-                update_env_setting("OPEN_IN_OBSIDIAN", 'true' if new_setting == 'y' else 'false')
-                print(f"✅ Open in Obsidian changed to: {'Yes' if new_setting == 'y' else 'No'}")
-                print("💡 When enabled, .md files open in Obsidian (falls back to default app if unavailable)")
-                print("💡 When disabled, files open in default app (e.g., TextEdit)")
-                print("⚠️ Restart the script to use the new setting")
+            # Configure Obsidian Integration
+            from obsidian_utils import configure_obsidian_integration
+
+            # Get save path to use for vault selection
+            SAVE_PATH = os.getenv("SAVE_PATH", "")
+            if not SAVE_PATH:
+                print("❌ Save path not configured. Please configure save path first.")
+                continue
+
+            obsidian_enabled, obsidian_vault_path = configure_obsidian_integration(SAVE_PATH)
+
+            # Update .env settings
+            update_env_setting("OBSIDIAN_ENABLED", 'true' if obsidian_enabled else 'false')
+            update_env_setting("OBSIDIAN_VAULT_PATH", obsidian_vault_path)
+
+            if obsidian_enabled:
+                vault_name = os.path.basename(obsidian_vault_path)
+                print(f"\n✅ Obsidian integration enabled for vault: {vault_name}")
+            else:
+                print(f"\n✅ Obsidian integration disabled")
+            print("⚠️ Restart the script to use the new setting")
 
         elif choice == "6":
             break

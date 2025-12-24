@@ -49,6 +49,9 @@ import whisper_engine as whisper
 # Import settings module
 from settings import settings_menu
 
+# Import Obsidian utilities
+from obsidian_utils import open_in_obsidian, is_path_in_vault
+
 # Import commands module
 from commands import (
     open_transcripts_folder,
@@ -73,7 +76,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:270m")
 OLLAMA_MAX_CONTENT_LENGTH = int(os.getenv("OLLAMA_MAX_CONTENT_LENGTH", "32000"))  # Character limit for AI processing
 AUTO_COPY = os.getenv("AUTO_COPY", "false").lower() == "true"
 AUTO_OPEN = os.getenv("AUTO_OPEN", "false").lower() == "true"
-OPEN_IN_OBSIDIAN = os.getenv("OPEN_IN_OBSIDIAN", "true").lower() == "true"  # Default true - try Obsidian first
+OBSIDIAN_ENABLED = os.getenv("OBSIDIAN_ENABLED", "false").lower() == "true"
+OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", "")
 AUTO_METADATA = os.getenv("AUTO_METADATA", "false").lower() == "true"
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))  # Default 3 minutes for local LLMs
@@ -820,7 +824,7 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                         print(f"⚠️ Final processing error: {e}")
                 
                 # Finalize quick transcript
-                loader.update("📝 Finalizing quick transcript...")
+                debug_log.detail("📝 Finalizing quick transcript...")
                 quick_transcript = assembler.finalize_transcript()
                 
                 # Check if we have real transcription content
@@ -972,40 +976,18 @@ def handle_post_transcription_actions(transcribed_text, full_path, ollama_availa
 
     def open_file(file_path):
         """Open file with Obsidian if enabled, otherwise use default app"""
-        # Try to open in Obsidian first (for .md files and if setting enabled)
-        if file_path.endswith('.md') and OPEN_IN_OBSIDIAN:
-            # Try opening with Obsidian app directly (better vault detection)
-            abs_path = os.path.abspath(file_path)
+        # Try to open in Obsidian using URI scheme if enabled
+        if file_path.endswith('.md') and OBSIDIAN_ENABLED and OBSIDIAN_VAULT_PATH:
+            from obsidian_utils import open_in_obsidian, is_path_in_vault
 
-            try:
-                if sys.platform == "darwin":
-                    # Use -a flag to open with specific app
-                    result = subprocess.run(["open", "-a", "Obsidian", abs_path],
-                                          capture_output=True,
-                                          stderr=subprocess.STDOUT,
-                                          timeout=2)
-                    if result.returncode == 0:
-                        return
-                else:
-                    result = subprocess.run(["obsidian", abs_path],
-                                          capture_output=True,
-                                          timeout=2)
-                    if result.returncode == 0:
-                        return
-            except:
-                # Obsidian not available or failed, fall back to default app
-                pass
+            # Check if file is within configured vault
+            if is_path_in_vault(file_path, OBSIDIAN_VAULT_PATH):
+                # Try opening with Obsidian URI
+                if open_in_obsidian(file_path, OBSIDIAN_VAULT_PATH):
+                    return  # Successfully opened in Obsidian
 
-        # Fall back to default app (TextEdit on macOS for .md files)
+        # Fall back to default app
         if sys.platform == "darwin":
-            # For macOS, explicitly use TextEdit for markdown files when not using Obsidian
-            if file_path.endswith('.md'):
-                try:
-                    subprocess.run(["open", "-a", "TextEdit", file_path])
-                    return
-                except:
-                    pass
-            # Generic open for other file types
             subprocess.run(["open", file_path])
         else:
             subprocess.run(["xdg-open", file_path])

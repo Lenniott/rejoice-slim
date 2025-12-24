@@ -38,10 +38,17 @@ def display_config_summary():
     print(f"   Command Name:       {command}")
     auto_copy = config.get('AUTO_COPY', 'false') == 'true'
     auto_open = config.get('AUTO_OPEN', 'false') == 'true'
-    open_obsidian = config.get('OPEN_IN_OBSIDIAN', 'false') == 'true'
     print(f"   Auto Copy:          {'✅ Yes' if auto_copy else '❌ No'}")
     print(f"   Auto Open:          {'✅ Yes' if auto_open else '❌ No'}")
-    print(f"   Open in Obsidian:   {'✅ Yes' if open_obsidian else '❌ No'}")
+
+    # Obsidian Integration
+    obsidian_enabled = config.get('OBSIDIAN_ENABLED', 'false') == 'true'
+    obsidian_vault = config.get('OBSIDIAN_VAULT_PATH', '')
+    if obsidian_enabled and obsidian_vault:
+        vault_name = os.path.basename(obsidian_vault)
+        print(f"   Obsidian Vault:     ✅ {vault_name}")
+    else:
+        print(f"   Obsidian Vault:     ❌ Not configured")
 
     # ⚙️ ADVANCED - Technical Settings
     print("\n⚙️ ADVANCED (Technical)")
@@ -106,10 +113,22 @@ def main():
     os.makedirs(save_path, exist_ok=True)
     print(f"✅ Transcripts will be saved in: {save_path}")
 
+    # 2a. Configure Obsidian integration
+    import sys
+    sys.path.insert(0, 'src')
+    from obsidian_utils import configure_obsidian_integration
+
+    obsidian_enabled, obsidian_vault_path = configure_obsidian_integration(save_path)
+
     # 3. Get the default output format
-    output_format = ""
-    while output_format not in ["md", "txt"]:
-        output_format = input("\n\nChoose the default output format (md/txt) [default: md]: ") or "md"
+    if obsidian_enabled:
+        # Obsidian requires markdown format
+        output_format = "md"
+        print(f"\n✓ Output format set to 'md' (required for Obsidian integration)")
+    else:
+        output_format = ""
+        while output_format not in ["md", "txt"]:
+            output_format = input("\n\nChoose the default output format (md/txt) [default: md]: ") or "md"
 
     # 4. Choose Whisper model
     models = ["tiny", "base", "small", "medium", "large"]
@@ -164,12 +183,6 @@ def main():
     print("\n--- Auto Actions ---")
     auto_copy = input("Auto copy to clipboard? (y/n) [default: n]: ").lower() or "n"
     auto_open = input("Auto open file after saving? (y/n) [default: n]: ").lower() or "n"
-
-    # Additional auto-action settings for advanced mode
-    if not is_basic_mode:
-        open_in_obsidian = input("Try opening .md files in Obsidian first? (y/n) [default: y]: ").lower() or "y"
-    else:
-        open_in_obsidian = "y"
 
     if ollama_installed:
         auto_metadata = input("Auto generate AI summary/tags? (y/n) [default: n]: ").lower() or "n"
@@ -271,7 +284,12 @@ def main():
         f.write(f"COMMAND_NAME='{rec_command}'\n")
         f.write(f"AUTO_COPY={'true' if auto_copy == 'y' else 'false'}\n")
         f.write(f"AUTO_OPEN={'true' if auto_open == 'y' else 'false'}\n")
-        f.write(f"OPEN_IN_OBSIDIAN={'true' if open_in_obsidian == 'y' else 'false'}\n")
+
+        # Obsidian Integration
+        f.write(f"# Obsidian Integration\n")
+        f.write(f"OBSIDIAN_ENABLED={'true' if obsidian_enabled else 'false'}\n")
+        f.write(f"OBSIDIAN_VAULT_PATH='{obsidian_vault_path}'\n")
+
         f.write(f"DEFAULT_MIC_DEVICE={mic_device}\n")
 
         # Streaming transcription settings (now the default mode)
