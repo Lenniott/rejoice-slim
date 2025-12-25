@@ -56,6 +56,7 @@ rec -o / --open-folder     # Open transcripts folder
 # AI Analysis
 rec -g ID / --genai ID     # AI analysis: themes, questions, actions
 rec -g /path/to/file.md    # Analyze any text file
+rec -f FILE / --format     # Format text into paragraphs
 
 # Reprocessing
 rec --reprocess ID         # Reprocess transcript audio
@@ -88,6 +89,31 @@ rec --genai /path/to/notes.txt  # Long form command
 # - Summarizes each chunk focusing on themes/questions/actions
 # - Creates meta-summary from all chunks
 # - Handles files up to 30k+ characters efficiently
+```
+
+### 📝 Text Formatting
+```bash
+# Format text files into meaningful paragraphs using AI
+rec -f /path/to/file.txt        # Format text file
+rec --format /path/to/notes.md  # Long form command
+
+# How it works:
+# - Breaks text into chunks (~1000 chars with 200 char overlap)
+# - AI reformats each chunk into clear paragraphs
+# - Preserves all original content (no summarization)
+# - Supports thinking models (removes <think> tags)
+# - Overwrites the original file with formatted version
+
+# Perfect for:
+# - Raw transcripts that need better paragraph structure
+# - Stream-of-consciousness notes
+# - Unformatted text dumps
+# - Any text needing better readability
+
+# Example workflow:
+rec                             # Record meeting
+rec -f ~/transcripts/000042*    # Format the transcript
+rec -g 000042                   # Then analyze with AI
 ```
 
 ### 🔗 Appending to Existing Transcripts

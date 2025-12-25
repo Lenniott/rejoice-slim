@@ -572,3 +572,24 @@ def recover_session(session_id_or_latest, save_path, output_format, sample_rate,
         print(f"❌ Recovery failed: {e}")
         return None
 
+
+def format_text_file(file_path: str):
+    """
+    Format a text file into meaningful paragraphs using Ollama.
+
+    Args:
+        file_path: Path to the text file to format
+    """
+    from formatting_service import get_formatter
+
+    if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
+        return
+
+    # Get formatter instance
+    formatter = get_formatter()
+
+    # Format the file (overwrites the original)
+    # The formatter handles all UI display
+    formatter.format_file(file_path)
+

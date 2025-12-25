@@ -63,7 +63,8 @@ from commands import (
     reprocess_transcript_command,
     reprocess_failed_command,
     list_recovery_sessions,
-    recover_session
+    recover_session,
+    format_text_file
 )
 
 # --- CONFIGURATION ---
@@ -1401,6 +1402,8 @@ if __name__ == "__main__":
                        help='List recoverable sessions')
     parser.add_argument('-ts', '--timestamps', action='store_true',
                        help='Include timestamps in transcript output (grouped by sentence)')
+    parser.add_argument('-f', '--format', type=str, metavar='FILE_PATH', dest='format_file',
+                       help='Format text file into meaningful paragraphs using AI (e.g., rec -f /path/to/file.txt)')
 
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1432,6 +1435,8 @@ if __name__ == "__main__":
             list_recovery_sessions(SAVE_PATH, SAMPLE_RATE)
         elif args.recover:
             recover_session(args.recover, SAVE_PATH, OUTPUT_FORMAT, SAMPLE_RATE, AUTO_METADATA, WHISPER_MODEL, transcribe_session_file)
+        elif args.format_file:
+            format_text_file(args.format_file)
         else:
             main(args)
     except KeyboardInterrupt:
