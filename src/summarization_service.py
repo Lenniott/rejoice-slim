@@ -18,7 +18,7 @@ from file_header import TranscriptHeader
 class SummarizationService:
     """Service for AI-powered summarization and tagging of text files."""
     
-    def __init__(self, 
+    def __init__(self,
                  ollama_model: str,
                  ollama_api_url: str = "http://localhost:11434/api/generate",
                  ollama_timeout: int = 180,
@@ -26,22 +26,81 @@ class SummarizationService:
                  max_content_length: int = 32000):
         """
         Initialize the summarization service.
-        
+
         Args:
             ollama_model: Ollama model to use for summarization
-            ollama_api_url: Ollama API endpoint
+            ollama_api_url: Ollama API endpoint (must be localhost for security)
             ollama_timeout: Timeout in seconds for Ollama requests
             notes_folder: Optional folder to copy processed files to
             max_content_length: Maximum characters to send to AI (default: 32000)
+
+        Raises:
+            ValueError: If ollama_api_url points to a non-localhost address
         """
+        # Security: Validate that Ollama URL is localhost-only
+        self._validate_localhost_url(ollama_api_url)
+
         self.ollama_model = ollama_model
         self.ollama_api_url = ollama_api_url
         self.ollama_timeout = ollama_timeout
         self.notes_folder = notes_folder
         self.max_content_length = max_content_length
-        
+
         # Load prompts for metadata generation
         self.prompts = self._load_prompts()
+
+    def _validate_localhost_url(self, url: str) -> None:
+        """
+        Validate that the Ollama API URL points to localhost only.
+
+        This is a critical security check to ensure transcripts are never
+        sent to remote servers, maintaining the "un-snoopable" promise.
+
+        Args:
+            url: The Ollama API URL to validate
+
+        Raises:
+            ValueError: If URL points to a non-localhost address
+        """
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+
+            # List of valid localhost identifiers
+            valid_hosts = ['localhost', '127.0.0.1', '::1', '0.0.0.0']
+
+            if hostname is None:
+                # Relative URL or malformed - reject for safety
+                raise ValueError(
+                    f"⚠️  SECURITY ERROR: Invalid Ollama API URL format: {url}\n"
+                    "   URL must explicitly specify localhost (e.g., http://localhost:11434/api/generate)"
+                )
+
+            if hostname.lower() not in valid_hosts:
+                raise ValueError(
+                    f"⚠️  SECURITY ERROR: Ollama API URL must be localhost, got: {hostname}\n"
+                    f"   Attempted URL: {url}\n\n"
+                    "   Rejoice only supports local Ollama instances to ensure your transcripts\n"
+                    "   remain private and are never sent to remote servers.\n\n"
+                    "   Valid examples:\n"
+                    "     • http://localhost:11434/api/generate\n"
+                    "     • http://127.0.0.1:11434/api/generate\n\n"
+                    "   If you need to use Ollama, please install it locally:\n"
+                    "     https://ollama.ai\n"
+                )
+
+        except ValueError:
+            # Re-raise our validation errors
+            raise
+        except Exception as e:
+            # Catch URL parsing errors
+            raise ValueError(
+                f"⚠️  SECURITY ERROR: Could not parse Ollama API URL: {url}\n"
+                f"   Error: {e}\n"
+                "   Please use a valid localhost URL (e.g., http://localhost:11434/api/generate)"
+            )
     
     def _load_prompts(self) -> Dict[str, Any]:
         """Load prompts from prompts.json file."""

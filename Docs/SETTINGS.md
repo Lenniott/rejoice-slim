@@ -1,6 +1,8 @@
-# ⚙️ Settings Guide
+# ⚙️ Rejoice Slim Settings Guide
 
 **← [Back to Home](README.md)**
+
+> ⚠️ **macOS Only** - These settings are for macOS. See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md) for other platforms.
 
 ## 🎛️ Configuration Menu
 
@@ -110,12 +112,36 @@ These settings control convenience features. Access them via: `rec -s` → Optio
 - **Enable if:** You always edit transcripts after recording
 - **How to change:** Settings → Casual → Toggle Auto Open
 
-### 📝 Open in Obsidian
-- **Default:** Enabled
-- **What it does:** Tries to open .md files in Obsidian first (falls back to default app)
-- **When disabled:** Opens files in default app (e.g., TextEdit)
-- **Useful for:** Obsidian vault workflows
-- **How to change:** Settings → Casual → Toggle Open in Obsidian
+### 📝 Obsidian Integration
+- **Default:** Not configured
+- **What it does:** Seamlessly integrates with your Obsidian vault for opening transcripts
+- **Setup workflow:**
+  1. **Enable integration** - Answer "yes" when asked during setup
+  2. **Vault selection** - System shows numbered list of directories from your save path
+  3. **Pick your vault** - Select which directory is your Obsidian vault root
+- **Example:**
+  ```
+  Save path: /Users/you/Documents/Obsidian/MyVault/Notes/Transcripts
+
+  Detected directories from path:
+  1. Users
+  2. you
+  3. Documents
+  4. Obsidian
+  5. MyVault  ← Select this
+  6. Notes
+  7. Transcripts
+
+  Which directory is your Obsidian vault? [Enter number]: 5
+  ```
+- **Smart behavior:**
+  - **When enabled:** Output format automatically set to `md` (Obsidian requires Markdown)
+  - **Opens with URI:** Uses `obsidian://open?vault=...&file=...` for reliable vault integration
+  - **Falls back gracefully:** If file is outside vault, opens with default app
+- **How to configure:**
+  - During setup: Automatically prompted after setting save path
+  - In settings: `rec -s` → Casual → Configure Obsidian Integration
+- **Reconfiguration:** Run settings anytime to change vault selection
 
 ## ⚙️ Advanced Settings (Technical)
 

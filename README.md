@@ -1,8 +1,11 @@
-# Rejoice - Local Voice Transcriber 🎙️
+# Rejoice Slim 🎙️
+### Record. Jot. Voice.
 
 **Free long-form transcription that runs offline - no limits, no data loss.**
 
-Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for **Obsidian users** who want to capture thoughts, meetings, and ideas as voice notes that automatically become searchable Markdown files in their vault.
+> ⚠️ **Currently macOS only** - See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/OS_AGNOSTIC_ROADMAP.md) for Linux/Windows support plans
+
+Rejoice Slim is a voice-to-text tool that runs entirely on your Mac. Perfect for **Obsidian users** who want to capture thoughts, meetings, and ideas as voice notes that automatically become searchable Markdown files in their vault.
 
 ## ✨ What It Does
 
@@ -10,7 +13,7 @@ Rejoice is a voice-to-text tool that runs entirely on your computer. Perfect for
 - 🆔 **Smart ID system** - Easy-to-reference transcripts with 6-digit IDs
 - ➕ **Append to transcripts** - Add to existing recordings with `rec -000001`
 - 🤖 **AI-powered analysis** - Generate filenames, summaries, and tags
-- 📝 **Obsidian-ready** - Markdown format with YAML frontmatter
+- 📝 **Obsidian integration** - Smart vault selection and URI-based opening
 - 🎙️ **Streaming transcription** - Processes audio continuously while recording
 - ⚡ **Short commands** - Use `-l`, `-v`, `-g`, `-s` for quick access
 - 🏠 **100% local** - Your voice data never leaves your computer
@@ -62,18 +65,19 @@ rec -g 000042                   # Analyze transcript by ID
 
 ## 📚 Documentation
 
-- **[🔧 Installation Guide](INSTALLATION.md)** - Detailed setup options and troubleshooting
-- **[📖 How to Use](USAGE.md)** - Complete user guide with examples  
-- **[⚙️ Settings](SETTINGS.md)** - Configuration options and customization
-- **[📦 Dependencies](DEPENDENCIES.md)** - Package details and security information
-- **[🏗️ Architecture](ARCHITECTURE.md)** - System design and developer guide
+- **[🔧 Installation Guide](Docs/INSTALLATION.md)** - Detailed setup options and troubleshooting (macOS)
+- **[📖 How to Use](Docs/USAGE.md)** - Complete user guide with examples
+- **[⚙️ Settings](Docs/SETTINGS.md)** - Configuration options and customization
+- **[📦 Dependencies](Docs/DEPENDENCIES.md)** - Package details and security information
+- **[🏗️ Architecture](Docs/ARCHITECTURE.md)** - System design and developer guide
+- **[🗺️ OS-Agnostic Roadmap](Docs/Future_Thoughts/OS_AGNOSTIC_ROADMAP.md)** - Future cross-platform support plans
 
 ---
 
 ## 🚀 Ready to Start?
 
-1. **Install** following the [Installation Guide](INSTALLATION.md)
-2. **Learn** the basics in [How to Use](USAGE.md)
-3. **Customize** with the [Settings Guide](SETTINGS.md)
+1. **Install** following the [Installation Guide](Docs/INSTALLATION.md)
+2. **Learn** the basics in [How to Use](Docs/USAGE.md)
+3. **Customize** with the [Settings Guide](Docs/SETTINGS.md)
 
 **Questions?** Check the documentation links above or create an issue on GitHub.

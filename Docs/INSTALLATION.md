@@ -1,8 +1,10 @@
-# 🔧 Installation Guide
+# 🔧 Rejoice Slim Installation Guide
 
 **← [Back to Home](README.md)**
 
-## 🚀 Quick Start
+> ⚠️ **macOS Only** - This installation guide is for macOS systems. Linux/Windows support is planned - see [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md)
+
+## 🚀 Quick Start (macOS)
 
 ### One-Command Installation (Recommended)
 ```bash
@@ -32,21 +34,22 @@ pip install -r requirements.txt
 python src/transcribe.py --config  # Configure output directory
 ```
 
-## 📋 Prerequisites
+## 📋 Prerequisites (macOS)
 
-You need these installed first:
+You need these installed on your Mac first:
 
 ### 1. Python 3
 **Download:** [python.org/downloads](https://www.python.org/downloads/)
 - **Required version:** Python 3.8 or newer
 - **Check if installed:** `python3 --version`
 
-### 2. Homebrew (macOS only)
+### 2. Homebrew (Required for macOS)
 **Install:** [brew.sh](https://brew.sh)
 - **Why Homebrew?** Enables reliable microphone access while other apps (Zoom, Spotify) are running
 - **What it installs:** PortAudio library for professional audio recording
 - **Security:** Downloads precompiled, signed packages; only installs audio I/O library
 - **Skip if needed:** Basic transcription works without it (may have audio compatibility issues)
+- **macOS Note:** This is the standard package manager for macOS
 
 ### 3. Ollama (Optional)
 **Download:** [ollama.com/download](https://ollama.com/download)
@@ -137,9 +140,16 @@ source ~/.zshrc  # or ~/.bashrc
 ### Getting Help
 
 1. **Check the logs** - Error messages usually point to the issue
-2. **Try audio-only mode** - Skip Homebrew if having installation issues  
+2. **Try audio-only mode** - Skip Homebrew if having installation issues
 3. **Test components separately** - Try Python, Whisper, and Ollama independently
-4. **Create an issue** - Include your OS, Python version, and error messages
+4. **Create an issue** - Include your macOS version, Python version, and error messages
+
+### Linux or Windows Users?
+
+This tool currently only supports macOS. See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md) for:
+- Current cross-platform status
+- Planned Linux/Windows support timeline
+- How to manually install on other platforms (advanced users)
 
 ---
 

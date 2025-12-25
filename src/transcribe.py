@@ -826,21 +826,24 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                 # Finalize quick transcript
                 debug_log.detail("📝 Finalizing quick transcript...")
                 quick_transcript = assembler.finalize_transcript()
-                
+
                 # Check if we have real transcription content
                 if quick_transcript and quick_transcript.has_content:
                     quick_transcript_text = quick_transcript.transcript_text.strip()
                     quick_transcript_path = quick_transcript.file_path
                     quick_transcript_id = quick_transcript.transcript_id
                     debug_log.milestone(f"Quick transcript ready: {len(quick_transcript_text)} chars")
-                    
+
                     # Copy to clipboard immediately
                     if AUTO_COPY and quick_transcript_text:
+                        loader.update("📋 Copying to clipboard...")
                         import pyperclip
                         pyperclip.copy(quick_transcript_text)
-                        print("📋 Quick transcript copied to clipboard.")
+                        loader.stop("📋 Quick transcript copied to clipboard.")
                         debug_log.detail("Quick transcript copied to clipboard")
-                    
+                    else:
+                        loader.stop()
+
                     safety_net.complete_processing_attempt(
                         session_id, streaming_attempt,
                         output_files=[quick_transcript_path] if quick_transcript_path else [],
@@ -867,8 +870,24 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
 
             # Start progress updater for transcription (conservative estimate based on audio duration)
             stop_transcribe_progress = threading.Event()
-            # Estimate: transcription takes ~0.3x audio duration with faster-whisper
-            estimated_transcribe_time = recording_duration * 0.3 if recording_duration > 0 else 20
+
+            # Estimate transcription time based on model size and audio duration
+            # faster-whisper performance varies by model:
+            # - tiny/base: ~0.1-0.15x audio duration
+            # - small: ~0.2-0.3x audio duration
+            # - medium: ~0.4-0.6x audio duration
+            # - large: ~0.8-1.2x audio duration
+            model_multipliers = {
+                'tiny': 0.15,
+                'base': 0.2,
+                'small': 0.3,
+                'medium': 0.5,
+                'large': 1.0,
+                'large-v2': 1.0,
+                'large-v3': 1.0
+            }
+            multiplier = model_multipliers.get(WHISPER_MODEL.lower(), 0.3)
+            estimated_transcribe_time = max(recording_duration * multiplier, 5.0) if recording_duration > 0 else 20
 
             def transcribe_progress_updater():
                 while not stop_transcribe_progress.is_set():

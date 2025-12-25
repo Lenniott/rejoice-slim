@@ -20,6 +20,74 @@ def list_audio_devices():
             input_devices.append((i, device['name']))
     return input_devices
 
+def validate_save_path(path: str) -> tuple:
+    """
+    Check if path is in cloud-synced directory and warn user.
+
+    This is a critical privacy check to prevent transcripts from being
+    automatically uploaded to cloud services, maintaining the "un-snoopable" promise.
+
+    Args:
+        path: The save path to validate
+
+    Returns:
+        tuple: (is_safe: bool, warning_message: str)
+    """
+    # Known cloud service indicators in paths
+    cloud_indicators = {
+        'icloud': 'iCloud',
+        'dropbox': 'Dropbox',
+        'google drive': 'Google Drive',
+        'googledrive': 'Google Drive',
+        'onedrive': 'OneDrive',
+        'box sync': 'Box',
+        'sync': 'Sync.com',
+        'cloudstation': 'Synology CloudStation',
+        'mega': 'MEGA',
+        'pcloud': 'pCloud',
+        'tresorit': 'Tresorit'
+    }
+
+    # Normalize path for checking
+    normalized_path = path.replace('\\', '/').lower()
+
+    # Check for cloud indicators
+    detected_service = None
+    for indicator, service_name in cloud_indicators.items():
+        if indicator in normalized_path:
+            detected_service = service_name
+            break
+
+    if detected_service:
+        warning = f"""
+╔═══════════════════════════════════════════════════════════════════╗
+║                    ⚠️  PRIVACY WARNING ⚠️                         ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+The selected path appears to be in a {detected_service} folder:
+  {path}
+
+This means your transcripts will be:
+  • Uploaded to cloud servers automatically
+  • Potentially indexed and analyzed by the cloud provider
+  • Accessible from all your synced devices
+  • Subject to the cloud provider's privacy policy and data handling
+  • Possibly scanned for content moderation or other purposes
+
+⚠️  This VIOLATES Rejoice's core promise of "un-snoopable" transcription!
+
+📁 Recommended local-only directories:
+  • ~/Documents/Transcripts
+  • ~/Desktop/Transcripts
+  • ~/Local/Transcripts
+  • /usr/local/share/transcripts
+
+💡 Tip: Create a dedicated local folder for maximum privacy.
+"""
+        return False, warning
+
+    return True, ""
+
 def update_env_setting(key, value):
     """Update a setting in the .env file"""
     env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
@@ -47,6 +115,14 @@ def update_env_setting(key, value):
     # Write back to file
     with open(env_path, 'w') as f:
         f.writelines(lines)
+
+    # Security: Ensure .env has secure permissions (owner read/write only)
+    try:
+        import stat
+        os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)  # 600 permissions
+    except Exception:
+        # Non-critical - just skip if permission setting fails
+        pass
 
     # Also update the current process environment
     os.environ[key] = value
@@ -127,7 +203,8 @@ def display_settings_overview():
 def settings_menu():
     """Interactive settings menu with categories"""
     try:
-        print("\n⚙️  Settings Menu")
+        print("\n⚙️  Rejoice Slim Settings")
+        print("   Record. Jot. Voice.")
         print("─" * 50)
 
         # Display overview on first load
@@ -201,9 +278,24 @@ def core_settings():
         if choice == "1":
             new_path = input(f"Enter new save path [{SAVE_PATH}]: ").strip()
             if new_path:
+                # Expand user path (~/... becomes /Users/username/...)
+                new_path = os.path.expanduser(new_path)
+
+                # Security: Check if path is cloud-synced
+                is_safe, warning = validate_save_path(new_path)
+                if not is_safe:
+                    print(warning)
+                    confirm = input("\n⚠️  Continue with this cloud-synced path anyway? [y/N]: ").strip().lower()
+                    if confirm not in ['y', 'yes']:
+                        print("✅ Save path change cancelled for security")
+                        continue
+
+                # Create directory if it doesn't exist
                 os.makedirs(new_path, exist_ok=True)
                 update_env_setting("SAVE_PATH", new_path)
                 print(f"✅ Save path changed to: {new_path}")
+                if not is_safe:
+                    print("⚠️  Remember: Your transcripts will sync to the cloud!")
                 print("⚠️ Restart the script to use the new path")
 
         elif choice == "2":
@@ -519,11 +611,33 @@ def advanced_settings():
                 print("❌ Please enter valid numbers")
 
         elif choice == "3":
-            new_url = input("\nEnter Ollama API URL (e.g., http://localhost:11434/api/generate): ").strip()
+            print("\n⚠️  SECURITY NOTICE: Ollama API URL must be localhost-only")
+            print("Rejoice only supports local Ollama instances to protect your privacy.")
+            print("\nValid examples:")
+            print("  • http://localhost:11434/api/generate")
+            print("  • http://127.0.0.1:11434/api/generate")
+
+            new_url = input("\nEnter Ollama API URL: ").strip()
             if new_url:
-                update_env_setting("OLLAMA_API_URL", new_url)
-                print(f"✅ Ollama API URL changed to: {new_url}")
-                print("⚠️ Restart the script to use the new URL")
+                # Validate the URL is localhost-only before saving
+                from urllib.parse import urlparse
+                try:
+                    parsed = urlparse(new_url)
+                    hostname = parsed.hostname
+                    valid_hosts = ['localhost', '127.0.0.1', '::1', '0.0.0.0']
+
+                    if hostname is None or hostname.lower() not in valid_hosts:
+                        print(f"\n❌ REJECTED: URL must point to localhost, got: {hostname or 'invalid'}")
+                        print("   Rejoice will not send your transcripts to remote servers.")
+                        print("   This protects your privacy and maintains the 'un-snoopable' promise.")
+                        continue
+
+                    update_env_setting("OLLAMA_API_URL", new_url)
+                    print(f"✅ Ollama API URL changed to: {new_url}")
+                    print("⚠️ Restart the script to use the new URL")
+                except Exception as e:
+                    print(f"❌ Invalid URL format: {e}")
+                    print("   Please use format: http://localhost:PORT/api/generate")
 
         elif choice == "4":
             print(f"\nCurrent timeout: {current_timeout} seconds")

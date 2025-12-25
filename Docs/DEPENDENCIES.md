@@ -2,9 +2,11 @@
 
 **← [Back to Home](README.md)**
 
+> ⚠️ **macOS Focus** - These dependencies are tested on macOS. See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md) for other platforms.
+
 ## 🔍 Package Overview
 
-Rejoice uses carefully selected packages for privacy, performance, and reliability. All processing happens locally on your device.
+Rejoice Slim uses carefully selected packages for privacy, performance, and reliability. All processing happens locally on your device.
 
 ## 🐍 Core Python Dependencies
 

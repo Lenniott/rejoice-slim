@@ -1,6 +1,8 @@
-# 📖 How to Use Rejoice
+# 📖 How to Use Rejoice Slim
 
 **← [Back to Home](README.md)**
+
+> ⚠️ **macOS Only** - This guide is for macOS users. See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md) for other platforms.
 
 ## 🎤 Basic Recording
 
@@ -189,10 +191,12 @@ Older transcripts may have the previous format with tags, summaries, and AI meta
 - **Pause between thoughts** - Helps with natural sentence breaks
 
 ### For Obsidian Users
-- **Set save path to your vault** - During setup or with `rec -s`
+- **Enable Obsidian integration** - Configure during setup or with `rec -s` → Casual → Configure Obsidian Integration
+- **Vault selection** - Pick your vault root from a numbered directory list
+- **Automatic Markdown** - Output format set to `md` when Obsidian integration is enabled
+- **URI-based opening** - Files open directly in Obsidian using proper vault URIs
 - **Use AI tags** - They automatically link to other notes
 - **Enable auto-metadata** - Summaries help with note organization
-- **Choose Markdown format** - Better integration with Obsidian features
 
 ### For Meeting Notes
 - **State the meeting topic** at the start - Helps AI generate better filenames
@@ -378,6 +382,101 @@ For large transcripts (3000+ characters), the AI uses advanced hierarchical proc
 - **Content Limits**: Adjust max content length (`rec -s` → Advanced → Max AI Content Length)
 - **Timeout Settings**: Configure AI timeout (`rec -s` → Advanced → Change Ollama Timeout)
 - **Auto-metadata**: Toggle automatic AI analysis (`rec -s` → Casual → Toggle Auto Metadata)
+
+## 📒 Obsidian Integration
+
+### Setting Up Obsidian Integration
+
+Rejoice Slim has sophisticated Obsidian vault integration that ensures transcripts open directly in Obsidian with proper vault context.
+
+#### During Initial Setup
+```
+Step 1: Enter save path
+/Users/you/Documents/Obsidian/MyVault/Notes/Transcripts
+
+Step 2: Integrate with Obsidian? [y/n]: y
+
+Step 3: Select your vault from the path:
+1. Users
+2. you
+3. Documents
+4. Obsidian
+5. MyVault  ← Your vault
+6. Notes
+7. Transcripts
+
+Which directory is your Obsidian vault? [1-7, or 0 to cancel]: 5
+
+✓ Selected vault: MyVault
+✓ Output format set to 'md' (required for Obsidian integration)
+```
+
+#### Configuring Later
+```bash
+rec -s                           # Open settings
+# Choose: Casual Settings → Configure Obsidian Integration
+```
+
+### How It Works
+
+**Smart Vault Detection**
+- Parses your save path into directory components
+- Shows you each directory as a numbered option
+- You select which one is your vault root
+- No guessing, no auto-detection issues
+
+**URI-Based Opening**
+- Uses `obsidian://open?vault=YourVault&file=path/to/file.md`
+- Opens files with full vault context
+- Works with iCloud-synced vaults
+- Falls back to default app if file is outside vault
+
+**Automatic Markdown**
+- When Obsidian integration is enabled, output format is set to `md`
+- You won't be asked to choose format during setup
+- Ensures compatibility with Obsidian
+
+### Benefits
+
+✅ **Reliable Opening** - No more "file not found" errors
+✅ **Vault Context** - Files open with full Obsidian features (links, tags, graph view)
+✅ **iCloud Support** - Works with iCloud-synced Obsidian vaults
+✅ **Easy Reconfiguration** - Change vault selection anytime via settings
+✅ **Fallback Handling** - If file is outside vault, opens with default app
+
+### Example Workflow
+
+```bash
+# 1. Setup with Obsidian integration enabled
+python configure.py
+# → Save path: /Users/you/.../MyVault/Transcripts
+# → Obsidian? y
+# → Select vault: MyVault
+
+# 2. Record a transcript
+rec
+# → File saved: MyVault/Transcripts/meeting-notes_25122025_000001.md
+
+# 3. Open automatically
+# → Opens directly in Obsidian with vault context
+# → Can see backlinks, tags, graph connections
+```
+
+### Troubleshooting Obsidian Integration
+
+**Files not opening in Obsidian?**
+- Verify save path is inside your vault: `rec -s` → Core → View Settings
+- Check vault path: Look for "Obsidian Vault: ✅ VaultName" in settings summary
+- Reconfigure if needed: `rec -s` → Casual → Configure Obsidian Integration
+
+**Want to change vault?**
+- Run `rec -s` → Casual → Configure Obsidian Integration
+- Select new vault from directory list
+- Previous transcripts remain unchanged
+
+**Want to disable Obsidian integration?**
+- Run `rec -s` → Casual → Configure Obsidian Integration
+- Answer "n" when asked "Integrate with Obsidian?"
 
 ## 🔧 Troubleshooting
 

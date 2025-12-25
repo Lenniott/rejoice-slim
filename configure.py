@@ -77,7 +77,8 @@ def display_config_summary():
     print("=" * 70 + "\n")
 
 def main():
-    print("--- 🎙️ Welcome to the Local Transcriber Setup ---")
+    print("--- 🎙️ Welcome to Rejoice Slim Setup ---")
+    print("Record. Jot. Voice.")
     print("Let's configure your settings. Press Enter to accept defaults.\n")
     
     # Check if Ollama is installed

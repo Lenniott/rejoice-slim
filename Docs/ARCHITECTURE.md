@@ -1,8 +1,12 @@
 # Architecture Documentation
 
+**← [Back to Home](../README.md)**
+
+> ⚠️ **macOS Only** - Current implementation is macOS-focused. See [OS_AGNOSTIC_ROADMAP.md](Docs/Future_Thoughts/STANDALONE_APP_ANALYSIS.md) for cross-platform plans.
+
 ## Overview
 
-Rejoice is a modular voice transcription system with real-time streaming capabilities and AI-powered analysis. The codebase follows a clean separation of concerns with distinct modules for recording, transcription, commands, and settings.
+Rejoice Slim is a modular voice transcription system with AI-powered analysis. The codebase follows a clean separation of concerns with distinct modules for recording, transcription, commands, and settings.
 
 ## Project Structure
 

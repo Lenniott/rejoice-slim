@@ -59,6 +59,19 @@ fi
 echo "⚙️ Now running the interactive configuration..."
 python3 configure.py
 
+# 5.5. Secure .env file permissions
+if [ -f ".env" ]; then
+    echo "🔒 Securing .env file permissions..."
+    chmod 600 .env
+    if [ $? -eq 0 ]; then
+        echo "✅ .env file permissions set to 600 (owner read/write only)"
+    else
+        echo "⚠️  Could not set .env file permissions (non-critical)"
+    fi
+else
+    echo "⚠️  .env file not found, skipping permission hardening"
+fi
+
 # 6. Clean up old aliases and create new ones
 echo "🔗 Setting up aliases in your ~/.zshrc file..."
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
