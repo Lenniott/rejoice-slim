@@ -26,6 +26,7 @@ python3 configure.py
 ```bash
 # Via alias (normal usage after installation)
 rec                    # Start recording
+rec -ts                # Start recording with timestamps
 rec -l                 # List transcripts
 rec -v 000042          # View transcript
 rec -g 000042          # AI analysis
@@ -33,6 +34,7 @@ rec -s                 # Settings menu
 
 # Direct Python execution (for development/debugging)
 python src/transcribe.py
+python src/transcribe.py -ts
 python src/transcribe.py -l
 python src/transcribe.py -v 000042
 ```
@@ -373,6 +375,19 @@ The `STREAMING_BUFFER_SIZE_SECONDS` setting affects memory usage:
 - Default: 300 seconds (5 min) = ~150MB
 - Formula: `buffer_size * sample_rate * bytes_per_sample`
 - Larger buffers = more memory but better recovery from slow transcription
+
+### 6. Timestamp Formatting
+The timestamp feature (`-ts` / `--timestamps`) uses a two-step process:
+1. **Segment extraction**: `format_transcript_with_timestamps()` in [transcribe.py](src/transcribe.py) adds `[MM:SS]` markers from Whisper segment data
+2. **Post-processing**: `post_format_timestamps()` uses regex `(?=\[[0-9]+:[0-9]+\])` to split text and ensure proper newlines
+
+This dual approach ensures timestamps are correctly formatted regardless of how the text is assembled (streaming vs full transcription).
+
+**Implementation locations**:
+- CLI argument: [transcribe.py:1317-1318](src/transcribe.py#L1317-L1318)
+- Formatting functions: [transcribe.py:144-204](src/transcribe.py#L144-L204)
+- Full transcription: [transcribe.py:962-966](src/transcribe.py#L962-L966)
+- Session file transcription: [transcribe.py:253-256](src/transcribe.py#L253-L256)
 
 ## When Making Changes
 

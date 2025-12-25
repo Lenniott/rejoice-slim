@@ -10,6 +10,7 @@ Rejoice Slim is a voice-to-text tool that runs entirely on your Mac. Perfect for
 ## ✨ What It Does
 
 - 🎤 **One-command recording** - Start transcribing with `rec`
+- ⏱️ **Timestamp support** - Add `[MM:SS]` markers with `rec -ts`
 - 🆔 **Smart ID system** - Easy-to-reference transcripts with 6-digit IDs
 - ➕ **Append to transcripts** - Add to existing recordings with `rec -000001`
 - 🤖 **AI-powered analysis** - Generate filenames, summaries, and tags
@@ -42,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/benjamayden/rejoice-slim/main/setup
 ### Basic Usage
 ```bash
 rec                              # Start recording (streaming, real-time transcription)
+rec -ts, --timestamps            # Record with timestamps ([MM:SS] markers)
 rec -000001                      # Append to existing transcript by ID
 rec -l, --list                   # Show all transcripts with their IDs
 rec -v 000001, --view 000001     # View content of transcript by ID

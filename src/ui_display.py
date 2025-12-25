@@ -84,7 +84,7 @@ def show_processing(elapsed_seconds, session_id=None, file_name=None, progress=N
     clear_screen()
 
     print("___________________________________\n")
-    print("PROCESSING...\n")
+    print("TAGGING & SUMMARIZING...\n")
 
     if progress is not None:
         filled = int(progress * 30 / 100)

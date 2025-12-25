@@ -148,11 +148,36 @@ rec -r ID / --recover ID     # Recover specific session by ID
 ### 🎛️ Recording Options
 ```bash
 rec --verbose               # Enable detailed streaming transcription output
+rec -ts / --timestamps      # Include timestamps in transcript output
 rec --device N              # Use specific microphone (N = device number)
 rec --copy / --no-copy     # Override clipboard auto-copy setting
 rec --open / --no-open     # Override auto-open file setting
 rec --metadata / --no-metadata  # Override AI metadata generation
 ```
+
+### ⏱️ Timestamps Feature
+```bash
+rec -ts                     # Record with timestamps
+rec --timestamps            # Long form command
+```
+
+**What you get:**
+```markdown
+[00:00] This is the first part of the recording at the beginning.
+
+[00:15] Here's another segment that was detected after 15 seconds.
+
+[01:30] This segment starts at one minute and thirty seconds.
+
+[05:45] And this is near the end of the recording.
+```
+
+**How it works:**
+- Timestamps use `[MM:SS]` format (or `[HH:MM:SS]` for recordings over an hour)
+- Each timestamp marks the start of a segment detected by Whisper
+- Segments are separated by blank lines for readability
+- Works with the full transcription (not streaming quick transcript)
+- Perfect for meetings, interviews, or any content where timing matters
 
 ## 📝 Understanding Output
 

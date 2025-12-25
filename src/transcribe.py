@@ -141,28 +141,99 @@ _global_recording_state = {
 }
 
 # Session management helper functions
-def transcribe_session_file(session_file, whisper_model):
-    """Transcribe a complete session file"""
+def post_format_timestamps(text):
+    """
+    Post-process text to ensure timestamps are on separate lines.
+    Splits text by timestamp pattern [MM:SS] or [HH:MM:SS].
+
+    Args:
+        text: Raw text with embedded timestamps
+
+    Returns:
+        Formatted text with timestamps on new lines
+    """
+    import re
+
+    # Pattern matches [MM:SS] or [HH:MM:SS] at word boundaries
+    # Using lookahead to keep the timestamps in the result
+    pattern = r'(?=\[[0-9]+:[0-9]+\])'
+
+    # Split on the pattern
+    parts = re.split(pattern, text)
+
+    # Filter out empty parts and strip whitespace
+    formatted_parts = [part.strip() for part in parts if part.strip()]
+
+    # Join with double newlines for spacing
+    return '\n\n'.join(formatted_parts)
+
+def format_transcript_with_timestamps(segments):
+    """
+    Format transcript segments with timestamps.
+    Groups text by segments with [MM:SS] timestamp markers.
+
+    Args:
+        segments: List of segment dicts with 'start', 'end', 'text' keys
+
+    Returns:
+        Formatted transcript string with timestamps
+    """
+    if not segments:
+        return ""
+
+    formatted_lines = []
+    for segment in segments:
+        start_time = segment.get('start', 0)
+        text = segment.get('text', '').strip()
+
+        if not text:
+            continue
+
+        # Format timestamp as [MM:SS]
+        minutes = int(start_time // 60)
+        seconds = int(start_time % 60)
+        timestamp = f"[{minutes:02d}:{seconds:02d}]"
+
+        # Add timestamp and text
+        formatted_lines.append(f"{timestamp} {text}")
+
+    # Join all segments into one string
+    raw_text = ' '.join(formatted_lines)
+
+    # Post-process: split on timestamp pattern to ensure proper newlines
+    return post_format_timestamps(raw_text)
+
+def transcribe_session_file(session_file, whisper_model, timestamps: bool = False):
+    """Transcribe a complete session file
+
+    Args:
+        session_file: Path to the audio file
+        whisper_model: Loaded Whisper model
+        timestamps: Include timestamps in output
+
+    Returns:
+        Transcribed text, optionally with timestamps
+    """
     try:
         # Read WAV file directly using wave module
         with wave.open(str(session_file), 'rb') as wav_file:
             frames = wav_file.readframes(-1)
             sample_rate = wav_file.getframerate()
             n_channels = wav_file.getnchannels()
-            
+
         # Convert bytes to numpy array
         audio_data = np.frombuffer(frames, dtype=np.int16)
-        
+
         # Convert to float32 normalized to [-1, 1]
         audio_data = audio_data.astype(np.float32) / 32767.0
-        
+
         # Handle stereo to mono conversion if needed
         if n_channels > 1:
             audio_data = audio_data.reshape(-1, n_channels).mean(axis=1)
-        
+
         if len(audio_data) < 1600:  # Less than 0.1 seconds
             return None
-        
+
         # Resample if needed (Whisper expects 16kHz)
         if sample_rate != SAMPLE_RATE:
             # Simple resampling - for production use scipy.signal.resample
@@ -173,14 +244,17 @@ def transcribe_session_file(session_file, whisper_model):
                 np.arange(len(audio_data)),
                 audio_data
             )
-        
+
         if WHISPER_LANGUAGE and WHISPER_LANGUAGE.lower() != "auto":
             result = whisper_model.transcribe(audio_data, fp16=False, language=WHISPER_LANGUAGE)
         else:
             result = whisper_model.transcribe(audio_data, fp16=False)
-        
-        return result["text"]
-        
+
+        if timestamps and 'segments' in result:
+            return format_transcript_with_timestamps(result['segments'])
+        else:
+            return result["text"]
+
     except Exception as e:
         print(f"❌ Session transcription failed: {e}")
         return None
@@ -188,11 +262,12 @@ def transcribe_session_file(session_file, whisper_model):
 def _global_signal_handler(signum, frame):
     """Global signal handler for Ctrl+C."""
     try:
-        if sys.platform == "darwin":  # macOS
-            print("\n🚫 Recording cancelled by user (Ctrl+C).")
-        else:
-            print("\n🚫 Recording cancelled by user.")
-        
+        print("\n")
+        print("🛑 Stopping recording...")
+        print("💾 Saving audio buffer...")
+        print("⏳ Preparing for transcription...")
+        print()
+
         # Set global cancellation state
         if _global_recording_state['cancelled']:
             _global_recording_state['cancelled'].set()
@@ -254,10 +329,15 @@ def safe_cleanup_audio(master_audio_file: Path, transcription_text: str,
     return True
 
 
-def record_audio_streaming(device_override: Optional[int] = None, debug: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
+def record_audio_streaming(device_override: Optional[int] = None, debug: bool = False, timestamps: bool = False) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
     """
     Records audio using the new streaming transcription system.
     Simplified version using sounddevice for compatibility.
+
+    Args:
+        device_override: Optional device ID to override default microphone
+        debug: Enable debug logging
+        timestamps: Include timestamps in transcript output
 
     Returns:
         Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]: (transcribed_text, master_audio_file_path, transcript_path, transcript_id)
@@ -910,7 +990,11 @@ def record_audio_streaming(device_override: Optional[int] = None, debug: bool = 
                 else:
                     result = whisper_model.transcribe(str(master_audio_file), fp16=False)
 
-                full_transcript_text = result['text'].strip()
+                # Format with timestamps if requested
+                if timestamps and 'segments' in result:
+                    full_transcript_text = format_transcript_with_timestamps(result['segments'])
+                else:
+                    full_transcript_text = result['text'].strip()
 
                 # Stop progress updates
                 stop_transcribe_progress.set()
@@ -1045,7 +1129,8 @@ def main(args=None):
 
         # 1. Record Audio with streaming system
         device_override = args.device if hasattr(args, 'device') and args.device is not None else None
-        transcription_result = record_audio_streaming(device_override, debug)
+        timestamps = args.timestamps if hasattr(args, 'timestamps') else False
+        transcription_result = record_audio_streaming(device_override, debug, timestamps)
         
         if len(transcription_result) == 4:
             transcribed_text, master_audio_file, existing_file_path, existing_transcript_id = transcription_result
@@ -1312,9 +1397,11 @@ if __name__ == "__main__":
                        help='Open the transcripts folder in Finder/Explorer')
     parser.add_argument('-r', '--recover', nargs='?', const='latest', 
                        help='Recover session by ID or "latest"')
-    parser.add_argument('-ls', '--list-sessions', action='store_true', 
+    parser.add_argument('-ls', '--list-sessions', action='store_true',
                        help='List recoverable sessions')
-    
+    parser.add_argument('-ts', '--timestamps', action='store_true',
+                       help='Include timestamps in transcript output (grouped by sentence)')
+
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
     
