@@ -256,31 +256,37 @@ def append_to_transcript(id_reference, save_path, output_format, auto_copy, reco
 
 
 def summarize_file(path_or_id, save_path, output_format, auto_copy):
-    """Summarize and tag a file by path or transcript ID."""
+    """Summarize and tag a file by path or transcript ID with enhanced UI."""
+    import time
+    import threading
+    from ui_display import show_processing
+
     try:
         # Initialize summarization service
         summarizer = get_summarizer(notes_folder=save_path)
-        
+
         # Determine if input is a file path or transcript ID
         file_path = None
-        
+        transcript_id = None
+
         if path_or_id.startswith('-') or path_or_id.isdigit():
             # It's a transcript ID reference
             file_manager = TranscriptFileManager(save_path, output_format)
-            
+
             try:
                 file_path = file_manager.find_transcript(path_or_id)
+                transcript_id = file_manager.id_generator.parse_reference_id(path_or_id)
             except ValueError as e:
                 print(f"❌ {str(e)}")
-                print("💡 Please resolve the naming conflict - multiple files have the same ID")
-                print("💡 Use 'rec --list' to see all transcripts and their filenames")
+                print("💡 Please resolve the naming conflict")
+                print("💡 Use 'rec --list' to see all transcripts")
                 return
-            
+
             if not file_path:
                 print(f"❌ Transcript with ID '{path_or_id}' not found.")
                 print("💡 Use 'rec --list' to see available transcripts")
                 return
-            
+
             print(f"🔍 Found transcript: {os.path.basename(file_path)}")
         else:
             # It's a file path
@@ -288,41 +294,77 @@ def summarize_file(path_or_id, save_path, output_format, auto_copy):
             if not os.path.exists(file_path):
                 print(f"❌ File not found: {file_path}")
                 return
-            
-            # Check if it's a text file
+
             _, ext = os.path.splitext(file_path)
             if ext.lower() not in ['.md', '.txt', '']:
                 print(f"⚠️ File type '{ext}' may not be supported. Continuing anyway...")
-        
-        print(f"🤖 Summarizing file: {os.path.basename(file_path)}")
-        
-        # Check if this is a transcript file (don't copy to notes folder)
+
+        file_name = os.path.basename(file_path)
+
+        # Check Ollama availability
+        if not summarizer.check_ollama_available():
+            print("❌ Ollama not available")
+            print("💡 Start Ollama service: 'ollama serve'")
+            return
+
+        print(f"🤖 Generating AI summary for: {file_name}")
+
+        # Show processing UI with progress
+        start_time = time.time()
+        stop_progress = threading.Event()
+
+        def progress_updater():
+            """Update UI during AI processing"""
+            while not stop_progress.is_set():
+                elapsed = time.time() - start_time
+                # AI processing is variable, show conservative progress
+                progress = min(int((elapsed / 30) * 90), 90)
+                show_processing(
+                    elapsed,
+                    session_id=transcript_id or "external",
+                    file_name=file_name,
+                    progress=progress
+                )
+                time.sleep(0.5)
+
+        progress_thread = threading.Thread(target=progress_updater, daemon=True)
+        progress_thread.start()
+
+        # Check if this is a transcript file
         is_transcript_file = file_path.startswith(save_path)
-        
+
         # Summarize the file
         success = summarizer.summarize_file(file_path, copy_to_notes=not is_transcript_file)
-        
+
+        # Stop progress UI
+        stop_progress.set()
+        progress_thread.join(timeout=1.0)
+
+        processing_time = time.time() - start_time
+
         if success:
-            print("🎉 Summarization completed successfully!")
-            
+            print(f"✅ AI summary completed in {processing_time:.1f}s")
+            print(f"📁 Updated file: {file_path}")
+
             # Copy to clipboard if enabled
             if auto_copy and is_transcript_file:
-                # For transcript files, copy the updated content
                 file_manager = TranscriptFileManager(save_path, output_format)
-                # Extract ID from filename to get updated content
-                import re
-                id_match = re.search(r'_(\d+)\.(md|txt)$', file_path)
-                if id_match:
-                    transcript_id = id_match.group(1)
-                    updated_content = file_manager.get_transcript_content(transcript_id)
-                    if updated_content:
-                        pyperclip.copy(updated_content)
-                        print("📋 Updated transcript copied to clipboard.")
+                if transcript_id:
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            updated_content = f.read()
+                        if updated_content:
+                            pyperclip.copy(updated_content)
+                            print("📋 Updated transcript copied to clipboard")
+                    except Exception as e:
+                        print(f"⚠️  Could not copy to clipboard: {e}")
         else:
-            print("❌ Summarization failed.")
-        
+            print(f"❌ AI summary failed after {processing_time:.1f}s")
+
     except Exception as e:
         print(f"❌ Error during summarization: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def transcribe_audio_file(audio_path, whisper_model_name):
@@ -572,3 +614,356 @@ def recover_session(session_id_or_latest, save_path, output_format, sample_rate,
         print(f"❌ Recovery failed: {e}")
         return None
 
+
+def copy_transcript_to_clipboard(id_reference, save_path, output_format):
+    """Copy transcript content to clipboard by ID."""
+    try:
+        file_manager = TranscriptFileManager(save_path, output_format)
+
+        # Find the transcript file
+        try:
+            file_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            print("💡 Please resolve the naming conflict - multiple files have the same ID")
+            return
+
+        if not file_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+            return
+
+        # Read the file content
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            print(f"❌ Error reading transcript: {e}")
+            return
+
+        if content:
+            import pyperclip
+            pyperclip.copy(content)
+            clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+            print(f"✅ Transcript {clean_id} copied to clipboard ({len(content)} characters)")
+        else:
+            print(f"❌ Transcript is empty")
+
+    except Exception as e:
+        print(f"❌ Error copying transcript: {e}")
+
+
+def copy_latest_transcript_to_clipboard(save_path, output_format):
+    """Copy most recent transcript to clipboard."""
+    try:
+        file_manager = TranscriptFileManager(save_path, output_format)
+        transcripts = file_manager.list_transcripts_with_audio()
+
+        if not transcripts:
+            print("❌ No transcripts found.")
+            print("💡 Record your first transcript with 'rec'")
+            return
+
+        # Get most recent (first in list, already sorted by date descending)
+        # Tuple format: (id, filename, creation_date, audio_count, total_duration)
+        latest = transcripts[0]
+        latest_id = latest[0]
+        latest_filename = latest[1]
+
+        # Find and read the file
+        file_path = file_manager.find_transcript(latest_id)
+        if not file_path:
+            print(f"❌ Could not find latest transcript file")
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            print(f"❌ Error reading transcript: {e}")
+            return
+
+        if content:
+            import pyperclip
+            pyperclip.copy(content)
+            print(f"✅ Latest transcript ({latest_id}) copied to clipboard")
+            print(f"   File: {latest_filename}")
+            print(f"   Size: {len(content)} characters")
+        else:
+            print(f"❌ Latest transcript is empty")
+
+    except Exception as e:
+        print(f"❌ Error copying latest transcript: {e}")
+
+
+def open_transcript_file(id_reference, save_path, output_format, obsidian_enabled, obsidian_vault_path):
+    """Open transcript file by ID in appropriate application."""
+    import sys
+    import subprocess
+
+    try:
+        file_manager = TranscriptFileManager(save_path, output_format)
+
+        # Find the transcript file
+        try:
+            file_path = file_manager.find_transcript(id_reference)
+        except ValueError as e:
+            print(f"❌ {str(e)}")
+            print("💡 Please resolve the naming conflict - multiple files have the same ID")
+            return
+
+        if not file_path:
+            print(f"❌ Transcript with ID '{id_reference}' not found.")
+            print("💡 Use 'rec --list' to see available transcripts")
+            return
+
+        clean_id = file_manager.id_generator.parse_reference_id(id_reference)
+        filename = os.path.basename(file_path)
+
+        # Try Obsidian first if enabled and file is markdown in vault
+        if file_path.endswith('.md') and obsidian_enabled and obsidian_vault_path:
+            from obsidian_utils import open_in_obsidian, is_path_in_vault
+
+            if is_path_in_vault(file_path, obsidian_vault_path):
+                if open_in_obsidian(file_path, obsidian_vault_path):
+                    print(f"📂 Opened transcript {clean_id} in Obsidian")
+                    print(f"   File: {filename}")
+                    return
+
+        # Fall back to default application
+        if sys.platform == "darwin":
+            subprocess.run(["open", file_path])
+        elif sys.platform == "linux":
+            subprocess.run(["xdg-open", file_path])
+        elif sys.platform == "win32":
+            subprocess.run(["explorer", file_path])
+        else:
+            print(f"📁 File location: {file_path}")
+            return
+
+        print(f"📂 Opened transcript {clean_id}")
+        print(f"   File: {filename}")
+
+    except Exception as e:
+        print(f"❌ Error opening transcript: {e}")
+
+
+def show_commands_list():
+    """Display categorized list of all available commands."""
+    print("\n" + "="*60)
+    print("REJOICE - Available Commands")
+    print("="*60)
+
+    # Main Operations
+    print("\n📝 MAIN OPERATIONS")
+    print("-" * 60)
+    print("  rec                    Start new recording")
+    print("  rec ID                 Append to existing transcript")
+    print("  rec -l, --list         List all transcripts")
+    print("  rec -v, --view ID      Show transcript content")
+    print("  rec -o, --open ID      Open transcript in editor/Obsidian")
+    print("  rec -s, --settings     Open settings menu")
+
+    # Transcription
+    print("\n🎵 TRANSCRIPTION")
+    print("-" * 60)
+    print("  rec --transcribe FILE  Transcribe audio file (WAV)")
+    print("  rec -r, --recover [ID] Recover interrupted session")
+    print("  rec -ls                List recoverable sessions")
+    print("  rec --reprocess ID     Re-transcribe all audio for ID")
+    print("  rec --reprocess-failed Process orphaned audio files")
+
+    # AI Operations
+    print("\n🤖 AI OPERATIONS")
+    print("-" * 60)
+    print("  rec -g, --genai ID     Generate AI summary and tags")
+    print("  rec -g FILE            Summarize any text file")
+
+    # Clipboard Operations
+    print("\n📋 CLIPBOARD OPERATIONS")
+    print("-" * 60)
+    print("  rec -c, --copy ID      Copy transcript to clipboard")
+    print("  rec --copy-latest      Copy most recent transcript")
+
+    # File Operations
+    print("\n📁 FILE OPERATIONS")
+    print("-" * 60)
+    print("  rec --open-folder      Open transcripts folder")
+    print("  rec --audio ID         Show audio files for transcript")
+
+    # Recording Modifiers
+    print("\n⚙️  RECORDING MODIFIERS")
+    print("-" * 60)
+    print("  rec --auto-copy        Auto-copy after recording")
+    print("  rec --no-copy          Don't auto-copy")
+    print("  rec --auto-open        Auto-open file after recording")
+    print("  rec --no-open          Don't auto-open")
+    print("  rec --metadata         Generate AI metadata after recording")
+    print("  rec --no-metadata      Skip AI metadata")
+    print("  rec --device N         Use specific microphone device")
+    print("  rec -ts, --timestamps  Include timestamps in output")
+
+    # Utility
+    print("\n🔧 UTILITY")
+    print("-" * 60)
+    print("  rec --commands         Show this command list")
+    print("  rec --debug            Enable debug output")
+
+    print("\n" + "="*60)
+    print("💡 TIP: Most commands support both short (-l) and long (--list) forms")
+    print("💡 TIP: Use 'rec -s' to configure default behaviors")
+    print("="*60 + "\n")
+
+
+def transcribe_arbitrary_audio(audio_path, save_path, output_format, whisper_model_name,
+                                auto_metadata, timestamps=False):
+    """
+    Transcribe an arbitrary audio file and save as new transcript.
+
+    Uses enhanced UI display pattern matching live recording.
+    Supports WAV format only (like session recovery).
+    """
+    import whisper_engine as whisper
+    import time
+    import threading
+    import wave
+    from pathlib import Path
+    from ui_display import show_transcribing, show_processing, show_complete
+
+    audio_file = Path(audio_path)
+    if not audio_file.exists():
+        print(f"❌ Audio file not found: {audio_path}")
+        return None
+
+    # Validate it's a WAV file
+    if audio_file.suffix.lower() not in ['.wav', '.wave']:
+        print(f"❌ Only WAV audio files are supported")
+        print(f"💡 Convert your audio to WAV format first")
+        return None
+
+    print(f"🎵 Transcribing audio file: {audio_file.name}")
+
+    try:
+        # Get audio duration for progress estimation
+        with wave.open(str(audio_file), 'rb') as wav:
+            frames = wav.getnframes()
+            rate = wav.getframerate()
+            duration_seconds = frames / float(rate)
+
+        print(f"📊 Audio duration: {duration_seconds:.1f}s")
+
+        # Phase 1: Transcription with UI
+        print("🔄 Loading Whisper model...")
+        whisper_model = whisper.load_model(whisper_model_name)
+
+        show_transcribing(0, session_id=audio_file.stem)
+
+        start_time = time.time()
+        stop_progress = threading.Event()
+
+        # Estimate transcription time (same multipliers as main recording)
+        model_multipliers = {
+            'tiny': 0.15, 'base': 0.2, 'small': 0.3,
+            'medium': 0.5, 'large': 0.7, 'large-v2': 0.7, 'large-v3': 0.7
+        }
+        multiplier = model_multipliers.get(whisper_model_name.lower(), 0.3)
+        estimated_time = max(duration_seconds * multiplier, 5.0)
+
+        def progress_updater():
+            """Update transcription progress UI"""
+            while not stop_progress.is_set():
+                elapsed = time.time() - start_time
+                progress = min(int((elapsed / estimated_time) * 95), 95)
+                show_transcribing(elapsed, session_id=audio_file.stem, progress=progress)
+                time.sleep(0.5)
+
+        progress_thread = threading.Thread(target=progress_updater, daemon=True)
+        progress_thread.start()
+
+        # Transcribe
+        result = whisper_model.transcribe(str(audio_file), fp16=False)
+
+        stop_progress.set()
+        progress_thread.join(timeout=1.0)
+
+        # Format transcript with timestamps if requested
+        if timestamps and 'segments' in result:
+            # Local import to avoid circular dependency
+            from transcribe import format_transcript_with_timestamps
+            transcript_text = format_transcript_with_timestamps(result['segments'])
+        else:
+            transcript_text = result.get('text', '').strip()
+
+        if not transcript_text:
+            print("❌ No speech detected in audio file")
+            return None
+
+        transcription_time = time.time() - start_time
+        print(f"✅ Transcription completed in {transcription_time:.1f}s")
+
+        # Phase 2: Save transcript
+        file_manager = TranscriptFileManager(save_path, output_format)
+        file_path, transcript_id, stored_audio_path = file_manager.create_new_transcript(
+            transcript_text=transcript_text,
+            generated_filename="transcript",
+            session_audio_file=audio_file
+        )
+
+        word_count = len(transcript_text.split())
+
+        # Phase 3: AI metadata (optional, with UI)
+        if auto_metadata and transcript_text.strip():
+            show_processing(0, session_id=transcript_id, file_name=os.path.basename(file_path))
+
+            try:
+                summarizer = get_summarizer()
+                if summarizer.check_ollama_available():
+                    ai_start = time.time()
+                    stop_ai_progress = threading.Event()
+
+                    def ai_progress_updater():
+                        """Update AI processing progress UI"""
+                        while not stop_ai_progress.is_set():
+                            elapsed = time.time() - ai_start
+                            progress = min(int((elapsed / 30) * 90), 90)
+                            show_processing(elapsed, session_id=transcript_id,
+                                          file_name=os.path.basename(file_path),
+                                          progress=progress)
+                            time.sleep(0.5)
+
+                    ai_thread = threading.Thread(target=ai_progress_updater, daemon=True)
+                    ai_thread.start()
+
+                    success = summarizer.summarize_file(file_path, copy_to_notes=False)
+
+                    stop_ai_progress.set()
+                    ai_thread.join(timeout=1.0)
+
+                    if success:
+                        print("✅ AI metadata generated successfully")
+                else:
+                    print("⚠️  Ollama not available - skipping AI metadata")
+            except Exception as e:
+                print(f"⚠️  AI metadata failed: {e}")
+
+        # Phase 4: Show completion UI (matches recording flow)
+        show_complete(
+            session_id=transcript_id,
+            file_name=os.path.basename(file_path),
+            file_path=file_path,
+            duration_seconds=duration_seconds,
+            word_count=word_count
+        )
+
+        return {
+            'transcript_id': transcript_id,
+            'file_path': file_path,
+            'transcript_text': transcript_text,
+            'word_count': word_count
+        }
+
+    except Exception as e:
+        print(f"❌ Transcription failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None

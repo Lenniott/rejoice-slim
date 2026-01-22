@@ -63,7 +63,12 @@ from commands import (
     reprocess_transcript_command,
     reprocess_failed_command,
     list_recovery_sessions,
-    recover_session
+    recover_session,
+    copy_transcript_to_clipboard,
+    copy_latest_transcript_to_clipboard,
+    open_transcript_file,
+    transcribe_arbitrary_audio,
+    show_commands_list
 )
 
 # --- CONFIGURATION ---
@@ -1357,50 +1362,81 @@ def main(args=None):
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Voice transcription tool')
-    parser.add_argument('-s', '--settings', action='store_true', 
-                       help='Open settings menu to change configuration')
-    parser.add_argument('--copy', action='store_true', dest='copy',
-                       help='Auto copy transcription to clipboard')
-    parser.add_argument('--no-copy', action='store_false', dest='copy',
-                       help='Do not copy transcription to clipboard')
-    parser.add_argument('--open', action='store_true', dest='open',
-                       help='Auto open the transcription file')
-    parser.add_argument('--no-open', action='store_false', dest='open',
-                       help='Do not open the transcription file')
-    parser.add_argument('--metadata', action='store_true', dest='metadata',
-                       help='Auto generate AI summary and tags')
-    parser.add_argument('--no-metadata', action='store_false', dest='metadata',
-                       help='Do not generate AI summary and tags')
-    parser.add_argument('--device', type=int, 
-                       help='Override default mic device for this recording')
-    parser.add_argument('--debug', '-d', action='store_true',
-                       help='Enable debug mode with detailed logging to file and console milestones')
-    parser.add_argument('--verbose', action='store_true',
-                       help='(Deprecated: use --debug) Enable debug mode')
-    parser.add_argument('id_reference', nargs='?', 
-                       help='Reference existing transcript by ID (e.g., -123456)')
-    parser.add_argument('-l', '--list', action='store_true',
-                       help='List all transcripts with their IDs')
-    parser.add_argument('-v', '--view', type=str, metavar='ID', dest='show',
-                       help='Show content of transcript by ID')
-    parser.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
-                       help='AI analysis and tagging of a file by path or transcript ID (e.g., /path/to/file.md or -123)')
-    parser.add_argument('--audio', type=str, metavar='ID', dest='show_audio',
-                       help='Show audio files associated with transcript by ID')
-    parser.add_argument('--reprocess', type=str, metavar='ID', dest='reprocess',
-                       help='Reprocess all audio files for transcript ID (transcribe + summarize)')
-    parser.add_argument('--reprocess-failed', action='store_true',
-                       help='Reprocess all orphaned audio files (audio without transcript)')
-    parser.add_argument('--overwrite', action='store_true',
-                       help='Overwrite existing transcript when reprocessing (default: create new)')
-    parser.add_argument('-o', '--open-folder', action='store_true',
-                       help='Open the transcripts folder in Finder/Explorer')
-    parser.add_argument('-r', '--recover', nargs='?', const='latest', 
-                       help='Recover session by ID or "latest"')
-    parser.add_argument('-ls', '--list-sessions', action='store_true',
-                       help='List recoverable sessions')
-    parser.add_argument('-ts', '--timestamps', action='store_true',
-                       help='Include timestamps in transcript output (grouped by sentence)')
+
+    # Main Operations
+    main_ops = parser.add_argument_group('Main Operations')
+    main_ops.add_argument('-l', '--list', action='store_true',
+                         help='List all transcripts with their IDs')
+    main_ops.add_argument('-v', '--view', type=str, metavar='ID', dest='show',
+                         help='Show content of transcript by ID (alias for --open)')
+    main_ops.add_argument('-o', '--open', type=str, metavar='ID', dest='open_transcript',
+                         help='Open transcript file by ID in default editor/Obsidian')
+    main_ops.add_argument('--transcribe', type=str, metavar='AUDIO_FILE', dest='transcribe_file',
+                         help='Transcribe an audio file (WAV format) to new transcript')
+    main_ops.add_argument('-s', '--settings', action='store_true',
+                         help='Open settings menu to change configuration')
+    main_ops.add_argument('id_reference', nargs='?',
+                         help='Reference existing transcript by ID to append new recording')
+
+    # AI Operations
+    ai_ops = parser.add_argument_group('AI Operations')
+    ai_ops.add_argument('-g', '--genai', type=str, metavar='PATH_OR_ID', dest='summarize',
+                       help='AI analysis and tagging of a file by path or transcript ID')
+
+    # Clipboard Operations
+    clipboard_ops = parser.add_argument_group('Clipboard Operations')
+    clipboard_ops.add_argument('-c', '--copy', type=str, metavar='ID', dest='copy_transcript',
+                              help='Copy transcript by ID to clipboard')
+    clipboard_ops.add_argument('--copy-latest', action='store_true',
+                              help='Copy most recent transcript to clipboard')
+
+    # File Operations
+    file_ops = parser.add_argument_group('File Operations')
+    file_ops.add_argument('--open-folder', action='store_true',
+                         help='Open the transcripts folder in Finder/Explorer')
+    file_ops.add_argument('--audio', type=str, metavar='ID', dest='show_audio',
+                         help='Show audio files associated with transcript by ID')
+
+    # Recovery Operations
+    recovery_ops = parser.add_argument_group('Recovery Operations')
+    recovery_ops.add_argument('-r', '--recover', nargs='?', const='latest',
+                             help='Recover interrupted session by ID or "latest"')
+    recovery_ops.add_argument('-ls', '--list-sessions', action='store_true',
+                             help='List recoverable sessions')
+    recovery_ops.add_argument('--reprocess', type=str, metavar='ID', dest='reprocess',
+                             help='Reprocess all audio files for transcript ID (transcribe + summarize)')
+    recovery_ops.add_argument('--reprocess-failed', action='store_true',
+                             help='Reprocess all orphaned audio files (audio without transcript)')
+    recovery_ops.add_argument('--overwrite', action='store_true',
+                             help='Overwrite existing transcript when reprocessing (default: create new)')
+
+    # Utility
+    utility_ops = parser.add_argument_group('Utility')
+    utility_ops.add_argument('--commands', action='store_true',
+                            help='Show categorized list of all available commands')
+    utility_ops.add_argument('--debug', '-d', action='store_true',
+                            help='Enable debug mode with detailed logging to file and console milestones')
+    utility_ops.add_argument('--verbose', action='store_true',
+                            help='(Deprecated: use --debug) Enable debug mode')
+
+    # Recording Modifiers
+    recording_mods = parser.add_argument_group('Recording Modifiers')
+    recording_mods.add_argument('--auto-copy', action='store_true', dest='copy',
+                               help='Auto copy transcription to clipboard after recording')
+    recording_mods.add_argument('--no-copy', action='store_false', dest='copy',
+                               help='Do not copy transcription to clipboard after recording')
+    recording_mods.add_argument('--auto-open', action='store_true', dest='open',
+                               help='Auto open the transcription file after recording')
+    recording_mods.add_argument('--no-open', action='store_false', dest='open',
+                               help='Do not open the transcription file after recording')
+    recording_mods.add_argument('--metadata', action='store_true', dest='metadata',
+                               help='Auto generate AI summary and tags after recording')
+    recording_mods.add_argument('--no-metadata', action='store_false', dest='metadata',
+                               help='Do not generate AI summary and tags after recording')
+    recording_mods.add_argument('--device', type=int,
+                               help='Override default mic device for this recording')
+    recording_mods.add_argument('-ts', '--timestamps', action='store_true',
+                               help='Include timestamps in transcript output (grouped by sentence)')
 
     # Set defaults to None so we can detect when they're not specified
     parser.set_defaults(copy=None, open=None, metadata=None)
@@ -1410,28 +1446,59 @@ if __name__ == "__main__":
     try:
         if not all([SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL, OLLAMA_MODEL]):
             print("❌ Configuration is missing. Please run the setup.sh script first.")
+
+        # Settings and utility commands
         elif args.settings:
             settings_menu()
+        elif args.commands:
+            show_commands_list()
+
+        # Listing commands
         elif args.list:
             list_transcripts(SAVE_PATH, OUTPUT_FORMAT)
-        elif args.show:
-            show_transcript(args.show, SAVE_PATH, OUTPUT_FORMAT)
-        elif args.show_audio:
-            show_audio_files(args.show_audio, SAVE_PATH, OUTPUT_FORMAT)
+        elif args.list_sessions:
+            list_recovery_sessions(SAVE_PATH, SAMPLE_RATE)
+
+        # View/Open commands (--view is alias for --open)
+        elif args.show:  # -v, --view
+            open_transcript_file(args.show, SAVE_PATH, OUTPUT_FORMAT, OBSIDIAN_ENABLED, OBSIDIAN_VAULT_PATH)
+        elif args.open_transcript:  # -o, --open
+            open_transcript_file(args.open_transcript, SAVE_PATH, OUTPUT_FORMAT, OBSIDIAN_ENABLED, OBSIDIAN_VAULT_PATH)
+
+        # Clipboard commands
+        elif args.copy_transcript:  # -c, --copy
+            copy_transcript_to_clipboard(args.copy_transcript, SAVE_PATH, OUTPUT_FORMAT)
+        elif args.copy_latest:
+            copy_latest_transcript_to_clipboard(SAVE_PATH, OUTPUT_FORMAT)
+
+        # Transcription commands
+        elif args.transcribe_file:
+            transcribe_arbitrary_audio(
+                args.transcribe_file, SAVE_PATH, OUTPUT_FORMAT, WHISPER_MODEL,
+                AUTO_METADATA, timestamps=args.timestamps if hasattr(args, 'timestamps') else False
+            )
+        elif args.recover:
+            recover_session(args.recover, SAVE_PATH, OUTPUT_FORMAT, SAMPLE_RATE, AUTO_METADATA, WHISPER_MODEL, transcribe_session_file)
         elif args.reprocess:
             reprocess_transcript_command(args.reprocess, SAVE_PATH, OUTPUT_FORMAT, args.overwrite, AUTO_METADATA, WHISPER_MODEL)
         elif args.reprocess_failed:
             reprocess_failed_command(SAVE_PATH, OUTPUT_FORMAT, AUTO_METADATA, WHISPER_MODEL)
+
+        # AI commands
         elif args.summarize:
             summarize_file(args.summarize, SAVE_PATH, OUTPUT_FORMAT, AUTO_COPY)
-        elif args.id_reference:
-            append_to_transcript(args.id_reference, SAVE_PATH, OUTPUT_FORMAT, AUTO_COPY, record_audio_streaming, deduplicate_transcript)
+
+        # File operations
+        elif args.show_audio:
+            show_audio_files(args.show_audio, SAVE_PATH, OUTPUT_FORMAT)
         elif args.open_folder:
             open_transcripts_folder(SAVE_PATH)
-        elif args.list_sessions:
-            list_recovery_sessions(SAVE_PATH, SAMPLE_RATE)
-        elif args.recover:
-            recover_session(args.recover, SAVE_PATH, OUTPUT_FORMAT, SAMPLE_RATE, AUTO_METADATA, WHISPER_MODEL, transcribe_session_file)
+
+        # Append to existing transcript (positional ID argument)
+        elif args.id_reference:
+            append_to_transcript(args.id_reference, SAVE_PATH, OUTPUT_FORMAT, AUTO_COPY, record_audio_streaming, deduplicate_transcript)
+
+        # Default: Start new recording
         else:
             main(args)
     except KeyboardInterrupt:
